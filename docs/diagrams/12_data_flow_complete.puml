@@ -1,0 +1,174 @@
+@startuml Complete System Data Flow
+!theme plain
+title Nova Firmware Complete Data Flow\nFrom User Input to Motor Control
+
+actor "User" as User
+entity "Encoder/Buttons\n(GPIO)" as Input
+entity "LCD Display\n(16×4)" as Display
+entity "Depth Sensor\n(ADC)" as ADC
+entity "MCB (Motor)\nUSART3" as MCB
+entity "Debug Console\nUSART1" as Console
+
+box "UI Task (Priority 2, 50Hz)" #LightBlue
+  participant "Button Scan" as BtnScan
+  participant "Encoder Scan" as EncScan
+  participant "LCD Update" as LCDUpdate
+end box
+
+box "Main Task (Priority 1, 100Hz)" #LightGreen
+  participant "Event Processor" as EventProc
+  participant "Serial Console" as SerialCmd
+  participant "Watchdog Monitor" as Watchdog
+end box
+
+queue "g_event_queue\n32 events" as EventQ
+
+box "Tapping Task (Priority 3, 20Hz)" #LightYellow
+  participant "Tapping FSM" as TapFSM
+end box
+
+box "Motor Task (Priority 4, 10Hz)" #LightCoral
+  participant "Motor Control" as MotorCtrl
+  participant "motor.c API" as MotorAPI
+  participant "motor_protocol.c" as ProtocolLayer
+end box
+
+queue "g_motor_cmd_queue\n16 commands" as MotorQ
+
+box "Depth Task (Priority 2, 50Hz)" #LightCyan
+  participant "ADC Reader" as ADCReader
+end box
+
+database "g_state\n(g_state_mutex)" as State
+
+== User Interaction Flow ==
+
+User -> Input : Press F1 button
+Input -> BtnScan : GPIO read (PC10)
+BtnScan -> EventQ : xQueueSend(EVT_BTN_F1)
+note right: Phase 1.2: Check overflow
+EventQ -> EventProc : xQueueReceive()
+EventProc -> EventProc : handle_event(EVT_BTN_F1)
+EventProc -> State : Update state
+State -> LCDUpdate : Read for display
+LCDUpdate -> Display : Show updated state
+
+== Motor Speed Control Flow ==
+
+User -> Console : "SPEED 1200\\n"
+Console -> SerialCmd : parse_command()
+SerialCmd -> MotorQ : MOTOR_CMD(CMD_MOTOR_SET_SPEED, 1200)
+note right
+  Phase 1.2: Queue overflow check
+  Phase 7: diagnostics tracking
+end note
+
+MotorQ -> MotorCtrl : xQueueReceive()
+MotorCtrl -> MotorCtrl : local_motor_set_speed(1200)
+MotorCtrl -> ProtocolLayer : send_command(CMD_SET_SPEED, 1200)
+
+ProtocolLayer -> ProtocolLayer : protocol_build_command()
+note right
+  Phase 6: Protocol layer
+  Uses int_to_decimal_str()
+  from utilities.c
+end note
+
+ProtocolLayer -> MCB : UART TX:\n[SOH]...[SV][1200][ETX][XOR]
+note right: Phase 1.1: Timeout protected
+
+MCB --> ProtocolLayer : ACK/Response
+ProtocolLayer -> MotorCtrl : Success
+MotorCtrl -> State : Update target_rpm
+State -> LCDUpdate : Read for display
+LCDUpdate -> Display : Show "1200 RPM"
+
+== Tapping Mode Flow ==
+
+User -> Console : "TAP 3\\n" (DEPTH mode)
+Console -> State : Set tap_mode = MODE_DEPTH
+State -> TapFSM : Read tap_mode
+
+loop Tapping Task Cycle (20Hz)
+  TapFSM -> State : Read depth_mm, motor_running
+  TapFSM -> TapFSM : Process tapping logic
+
+  alt Depth ≥ target
+    TapFSM -> MotorQ : MOTOR_CMD(CMD_MOTOR_TAP_REVERSE)
+    MotorQ -> MotorCtrl : Command received
+    MotorCtrl -> MotorCtrl : local_motor_set_direction(REVERSE)
+    MotorCtrl -> ProtocolLayer : send_command(CMD_FORWARD, PARAM_REVERSE)
+    ProtocolLayer -> MCB : JF=0x06AB (reverse)
+  end
+end
+
+== Depth Monitoring Flow ==
+
+loop Depth Task Cycle (50Hz)
+  ADC -> ADCReader : Read PC1 (Ch11)
+  ADCReader -> ADCReader : Calculate mm
+  ADCReader -> State : Update depth_mm
+  State -> LCDUpdate : Read for display
+  LCDUpdate -> Display : Show depth
+  State -> TapFSM : depth_mm (for tapping)
+end
+
+== Motor Status Polling Flow ==
+
+loop Motor Task Cycle (10Hz)
+  MotorCtrl -> ProtocolLayer : send_query(CMD_GET_FLAGS)
+  ProtocolLayer -> ProtocolLayer : protocol_build_query()
+  ProtocolLayer -> MCB : GF query
+
+  MCB --> ProtocolLayer : flags,speed,load,vib,temp
+  ProtocolLayer -> ProtocolLayer : protocol_parse_gf_response()
+  note right: Phase 6: Protocol parsing
+
+  ProtocolLayer -> MotorCtrl : Parsed values
+  MotorCtrl -> MotorCtrl : temp_monitor_update(temp)
+  note right: Phase 2.2: Temperature module
+  MotorCtrl -> MotorCtrl : jam_load_update(load)
+  note right: Phase 2.3: Jam module
+  MotorCtrl -> State : Update motor_running, etc.
+  State -> LCDUpdate : Read for display
+  LCDUpdate -> Display : Show RPM, status
+end
+
+== Watchdog Safety ==
+
+loop Main Task Cycle (100Hz)
+  Watchdog -> Watchdog : Check all task heartbeats
+  Watchdog -> Watchdog : motor_heartbeat OK?
+  Watchdog -> Watchdog : ui_heartbeat OK?
+  Watchdog -> Watchdog : depth_heartbeat OK?
+  Watchdog -> Watchdog : tapping_heartbeat OK?
+
+  alt All tasks alive
+    Watchdog -> Watchdog : IWDG->KR = 0xAAAA
+    note right: Refresh watchdog (3s timeout)
+  else Any task hung
+    Watchdog -> Watchdog : Don't refresh
+    note right
+      Watchdog will reset system
+      Crash dump will log fault
+    end note
+  endif
+end
+
+note bottom
+  **Data Flow Highlights:**
+
+  1. **User Input** → Event Queue → Main Task → State → Display
+  2. **Serial Commands** → Motor Queue → Motor Task → MCB → State
+  3. **Depth Sensor** → Depth Task → State → Display + Tapping
+  4. **MCB Status** → Motor Task → State → Display
+  5. **Errors** → Diagnostics → STATS/ERRORS/PERF commands
+
+  All flows protected by:
+  • Mutexes (g_state_mutex, g_motor_mutex, g_uart_mutex)
+  • Queue overflow detection (Phase 1.2)
+  • UART timeouts (Phase 1.1)
+  • Diagnostics tracking (Phase 7)
+end note
+
+@enduml

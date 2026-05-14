@@ -1,0 +1,140 @@
+@startuml Before and After Architecture
+!theme plain
+title Code Cleanup Transformation: v1.0 → v2.0\nFrom Monolithic to Modular
+
+package "BEFORE (v1.0-pre-cleanup)" {
+  component "task_motor.c\n1,380 lines" as OldTaskMotor #pink {
+    [God Object]
+    [Mixed Concerns]
+    [Protocol Parsing]
+    [Motor Control]
+    [Spindle Hold Logic]
+    [Jam Detection]
+    [Temperature Monitoring]
+    [Initialization Code]
+    [Status Query Logic]
+  }
+
+  component "motor.c\n1,116 lines" as OldMotor #pink {
+    [Motor API]
+    [Protocol Building]
+    [Duplicate Parsing]
+    [Magic Numbers]
+  }
+
+  note right of OldTaskMotor
+    **Problems:**
+    • 8+ infinite UART loops (CRITICAL)
+    • 321-line motor_query_status()
+    • Protocol duplicated 3 times
+    • Spindle hold inline (115 lines)
+    • Jam detection inline (30 lines)
+    • Temp monitoring inline (55 lines)
+    • 20+ magic numbers
+    • No error handling on UART
+    • No diagnostics
+    • No unit tests
+    • Thread safety undocumented
+  end note
+}
+
+package "AFTER (v2.0-complete)" {
+
+  component "task_motor.c\n1,207 lines\n(-12.5%)" as NewTaskMotor #lightgreen {
+    [Task Orchestration]
+    [State Machine]
+    [Event Processing]
+    [Init Helpers] #lightblue
+  }
+
+  component "motor.c\n1,038 lines\n(-7%)" as NewMotor #lightgreen {
+    [Motor Control API]
+    [MCB Communication]
+  }
+
+  component "motor_protocol.c\n208 lines\nPhase 6" as NewProtocol #yellow {
+    [Protocol Layer]
+    [16 unit tests ✅]
+  }
+
+  component "diagnostics.c\n320 lines\nPhase 7" as NewDiag #yellow {
+    [Error Tracking]
+    [Performance Metrics]
+    [STATS/ERRORS/PERF]
+  }
+
+  component "spindle_hold.c\n150 lines\nPhase 2.1" as NewHold #cyan {
+    [Position Lock]
+  }
+
+  component "jam.c\n282 lines\nPhase 2.3" as NewJam #cyan {
+    [Safety Monitoring]
+  }
+
+  component "temperature.c\n164 lines\nPhase 2.2" as NewTemp #cyan {
+    [Thermal Monitoring]
+  }
+
+  component "utilities.c\n25 lines\nPhase 3.3" as NewUtils #lightgray {
+    [Common Helpers]
+    [7 unit tests ✅]
+  }
+
+  NewTaskMotor --> NewMotor
+  NewTaskMotor --> NewProtocol
+  NewTaskMotor --> NewHold
+  NewTaskMotor --> NewJam
+  NewTaskMotor --> NewTemp
+  NewTaskMotor --> NewDiag
+
+  NewMotor --> NewProtocol
+  NewMotor --> NewUtils
+
+  NewProtocol --> NewUtils
+  NewHold --> NewMotor
+}
+
+note as Stats
+  **Transformation Metrics**
+
+  **Code Size:**
+  • Combined: 2,496 → 2,245 lines (-10.1%)
+  • task_motor.c: 1,380 → 1,207 (-12.5%)
+  • motor.c: 1,116 → 1,038 (-7.0%)
+
+  **Modules:**
+  • Before: 2 monolithic files
+  • After: 7 organized modules
+
+  **Safety:**
+  • Infinite loops: 8+ → 0 (100% fixed)
+  • UART timeouts: None → All protected
+  • Error handling: None → Comprehensive
+
+  **Quality:**
+  • Magic numbers: 20+ → 0 (13 constants)
+  • Unit tests: 0 → 23 (100% passing)
+  • Diagnostics: None → Full system
+  • Thread safety: Undocumented → Classified
+
+  **Development:**
+  • Git commits: 24 atomic commits
+  • Git tags: 11 rollback points
+  • Documentation: 4 technical reports
+  • Test coverage: Core modules tested
+end note
+
+note as Features
+  **New Capabilities in v2.0:**
+
+  ✅ Cannot hang (Phase 1)
+  ✅ Real-time diagnostics (Phase 7)
+  ✅ Hardware failsafe (Phase 1.1b)
+  ✅ Queue monitoring (Phase 5.3)
+  ✅ Unit tested protocol (Phase 9)
+  ✅ Modular architecture (Phases 2,6,8)
+  ✅ Comprehensive logging (Phase 1)
+  ✅ Thread-safe (Phase 5)
+end note
+
+@enduml

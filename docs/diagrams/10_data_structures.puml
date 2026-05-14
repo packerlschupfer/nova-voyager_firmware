@@ -1,0 +1,196 @@
+@startuml Key Data Structures
+!theme plain
+title Nova Firmware Key Data Structures\nShared State and Module Interfaces
+
+class "shared_state_t" as State {
+  **Global State (protected by g_state_mutex)**
+  --
+  +app_state_t state
+  +uint16_t target_rpm
+  +bool motor_running
+  +bool motor_forward
+  +bool motor_fault
+  +uint16_t depth_mm
+  +tap_mode_t tap_mode
+  +bool menu_active
+  +uint32_t motor_queue_overflows
+  --
+  **Thread Safety:**
+  [SHARED_STATE:g_state_mutex]
+  Access via STATE_LOCK()/STATE_UNLOCK()
+}
+
+class "motor_status_t" as MotorStatus {
+  **Motor Controller Status (motor.c)**
+  --
+  +motor_state_t state
+  +uint16_t raw_flags
+  +uint16_t speed_rpm
+  +uint16_t load_percent
+  +uint16_t vibration
+  +uint16_t temperature
+  +uint16_t target_speed
+  +uint8_t retry_count
+  +uint32_t last_update_ms
+  +bool fault, overload, jam_detected
+  +bool rps_error, pfc_fault
+  +bool voltage_error, overheat
+  --
+  **Thread Safety:**
+  [SHARED_STATE:g_motor_mutex]
+  Updated by motor task only
+}
+
+class "diagnostics_t" as Diag {
+  **System Diagnostics (Phase 7)**
+  --
+  +uint32_t uart_tx_timeouts
+  +uint32_t uart_rx_timeouts
+  +uint32_t uart_bytes_sent
+  +uint32_t uart_bytes_received
+  +uint32_t event_queue_overflows
+  +uint32_t motor_queue_overflows
+  +uint16_t event_queue_peak
+  +uint16_t motor_queue_peak
+  +uint32_t protocol_checksum_errors
+  +uint32_t protocol_frame_errors
+  +uint32_t protocol_timeout_errors
+  +uint32_t protocol_commands_sent
+  +uint32_t protocol_queries_sent
+  +uint32_t protocol_retries
+  +uint32_t mcb_comm_failures
+  +uint32_t mcb_comm_success
+  +uint32_t mcb_total_queries
+  +uint32_t boot_timestamp_ms
+  +uint32_t watchdog_refresh_count
+  --
+  **Thread Safety:**
+  [MODULE_LOCAL]
+  Incremented from various contexts
+}
+
+class "motor_cmd_t" as MotorCmd {
+  **Motor Command (queue message)**
+  --
+  +motor_cmd_type_t cmd
+  +int16_t param
+  --
+  Sent via g_motor_cmd_queue
+  From: Main, Tapping tasks
+  To: Motor task
+}
+
+class "event_type_t" as Event {
+  **UI Event (enum)**
+  --
+  EVT_BTN_F1..F4
+  EVT_BTN_ENCODER
+  EVT_ENC_CW, EVT_ENC_CCW
+  EVT_MOTOR_FAULT
+  EVT_JAM_DETECTED
+  EVT_TEMP_WARNING
+  EVT_OVERHEAT
+  EVT_BOOT_COMPLETE
+  --
+  Sent via g_event_queue
+  From: UI, Motor, Tapping tasks
+  To: Main task
+}
+
+class "jam_status_t" as JamStatus {
+  **Jam Detection Status (Phase 2.3)**
+  --
+  +jam_type_t type
+  +uint32_t timestamp
+  +uint16_t duration_ms
+  +bool acknowledged
+  --
+  **jam_type_t:**
+  JAM_NONE
+  JAM_STARTUP_TIMEOUT
+  JAM_STALL_DETECTED
+  JAM_COMM_TIMEOUT
+  JAM_LOAD_SUSTAINED (Phase 2.3)
+  JAM_LOAD_SPIKE (Phase 2.3)
+}
+
+class "crash_dump_t" as Crash {
+  **Crash Dump (crash_dump.c)**
+  --
+  +crash_type_t type
+  +uint32_t timestamp
+  +uint32_t pc, lr, psr
+  +char task_name[16]
+  +uint16_t checksum
+  --
+  **Phase 1.3: String safety**
+  task_name uses strncpy()
+  + null termination
+}
+
+class "settings_t" as Settings {
+  **User Settings (EEPROM/Flash)**
+  --
+  +speed_settings_t speed
+  +tapping_settings_t tapping
+  +sensor_settings_t sensor
+  +power_settings_t power
+  +motor_settings_t motor
+  +depth_settings_t depth
+  --
+  Loaded at boot
+  Persisted to EEPROM
+}
+
+' Relationships
+State "1" *-- "1" Event : g_event_queue
+State "1" *-- "1" MotorCmd : g_motor_cmd_queue
+MotorStatus "1" -- "1" State : motor status → g_state
+JamStatus "1" -- "1" State : jam → EVT_JAM_DETECTED
+Diag "1" -- "1" State : tracks queue_overflows
+Settings "1" -- "1" State : loaded into g_state
+
+note right of State
+  **Phase 5: Thread Safety**
+
+  All static variables classified:
+  • [TASK_LOCAL] - Single task only
+  • [MODULE_LOCAL] - Module internal
+  • [SHARED_STATE:mutex] - Protected
+
+  g_state is the main shared state
+  protected by g_state_mutex
+end note
+
+note right of Diag
+  **Phase 7: Comprehensive Tracking**
+
+  Monitors ALL safety features:
+  • UART timeouts (Phase 1.1)
+  • Queue overflows (Phase 1.2)
+  • Protocol errors (Phase 6)
+  • MCB communication health
+  • System performance
+
+  Access via:
+  diagnostics_get() → read-only
+  diagnostics_*() → increment counters
+end note
+
+note bottom
+  **Memory Layout:**
+
+  Queues: Static allocation (no malloc)
+  • g_event_queue: 32 × 4 bytes = 128 bytes
+  • g_motor_cmd_queue: 16 × 8 bytes = 128 bytes
+
+  Mutexes: Static allocation
+  • g_state_mutex
+  • g_motor_mutex
+  • g_uart_mutex
+
+  Total Static RAM: ~11,156 bytes (22.7% of 48KB)
+  Free Stack Space: Monitored via STACK command
+end note
+
+@enduml

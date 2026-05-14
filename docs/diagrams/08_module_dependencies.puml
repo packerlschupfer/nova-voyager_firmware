@@ -1,0 +1,162 @@
+@startuml Module Dependencies and Data Flow
+!theme plain
+title Module Dependencies After v2.0 Refactoring\nShowing Phase Extraction and Dependencies
+
+skinparam componentStyle rectangle
+
+package "Core Firmware (16,000 lines total)" {
+
+  component "task_motor.c\n1,207 lines\n-12.5% from v1.0" as TaskMotor {
+    [Motor Task Loop]
+    [Motor Control FSM]
+    [Init Helpers] #lightblue
+  }
+
+  component "motor.c\n1,038 lines\n-7% from v1.0" as Motor {
+    [Motor Control API]
+    [MCB Communication]
+    [Status Management]
+  }
+
+  component "motor_protocol.c\n208 lines\nPhase 6" as Protocol #lightgreen {
+    [protocol_build_query()]
+    [protocol_build_command()]
+    [protocol_parse_field()]
+    [protocol_validate_response()]
+  }
+
+  component "diagnostics.c\n320 lines\nPhase 7" as Diagnostics #lightyellow {
+    [Error Counters]
+    [Performance Metrics]
+    [STATS Command]
+    [ERRORS Command]
+    [PERF Command]
+  }
+
+  component "spindle_hold.c\n150 lines\nPhase 2.1" as SpindleHold #lightcyan {
+    [spindle_hold_start()]
+    [spindle_hold_release()]
+    [spindle_hold_update()]
+  }
+
+  component "jam.c\n282 lines\nPhase 2.3" as Jam #lightcyan {
+    [jam_load_update()]
+    [jam_update()]
+    [State-based detection]
+    [Load-based detection]
+  }
+
+  component "temperature.c\n164 lines\nPhase 2.2" as Temp #lightcyan {
+    [temp_monitor_update()]
+    [temp_query_mcb()]
+    [GD32 internal sensor]
+    [MCB heatsink sensor]
+  }
+
+  component "utilities.c\n25 lines\nPhase 3.3" as Utils #lightgray {
+    [int_to_decimal_str()]
+    [delay_ms()] #note: in shared.h
+  }
+
+  component "shared.h\nPhase 1-5" as Shared #lightgray {
+    [g_state (shared state)]
+    [g_event_queue]
+    [g_motor_cmd_queue]
+    [Mutexes (state, motor, uart)]
+    [MOTOR_CMD macro]
+    [delay_ms() inline]
+  }
+}
+
+' Dependencies - showing data flow
+TaskMotor ..> Motor : "motor_*() calls"
+TaskMotor ..> SpindleHold : "spindle_hold_*()"
+TaskMotor ..> Jam : "jam_load_update()"
+TaskMotor ..> Temp : "temp_monitor_update()"
+TaskMotor ..> Protocol : "send_query()\nsend_command()"
+TaskMotor ..> Diagnostics : "diagnostics_*()"
+TaskMotor ..> Shared : "g_state, queues"
+
+Motor ..> Protocol : "protocol_build_*()\nprotocol_parse_*()"
+Motor ..> Utils : "int_to_decimal_str()"
+Motor ..> Shared : "delay_ms(), mutexes"
+
+Protocol ..> Utils : "int_to_decimal_str()"
+
+SpindleHold ..> Motor : "motor_send_command()"
+SpindleHold ..> Shared : "delay_ms()"
+
+Jam ..> Shared : "SEND_EVENT()"
+Temp ..> Motor : "motor_read_param()"
+Temp ..> Shared : "SEND_EVENT()"
+
+Diagnostics ..> Shared : "g_event_queue\ng_motor_cmd_queue"
+
+' Test coverage
+note right of Protocol
+  **Unit Tested ✅**
+  16 tests covering:
+  • Query building
+  • Command building
+  • Field parsing
+  • Response validation
+  • Checksum calculation
+end note
+
+note right of Utils
+  **Unit Tested ✅**
+  7 tests covering:
+  • Zero handling
+  • Single/multi-digit
+  • Large numbers
+  • Motor speeds
+  • Integration
+end note
+
+' Phase annotations
+note bottom of SpindleHold
+  **Phase 2.1: Extracted**
+  From task_motor.c lines 549-664
+  115 lines removed from god object
+end note
+
+note bottom of Diagnostics
+  **Phase 7: New System**
+  Tracks ALL safety features:
+  • UART timeouts (Phase 1.1)
+  • Queue overflows (Phase 1.2)
+  • Protocol errors (Phase 6)
+  • MCB comm health
+
+  Real-time visibility via
+  STATS/ERRORS/PERF commands
+end note
+
+note bottom of Protocol
+  **Phase 6: Abstraction**
+  Consolidated from:
+  • motor.c build_packet() (-65 lines)
+  • motor.c build_query_packet() (-20 lines)
+  • task_motor.c send_command() (-30 lines)
+  • task_motor.c send_query() (-20 lines)
+
+  Single reusable protocol layer
+  Could support multiple MCB versions
+end note
+
+' Data flow legend
+legend right
+  **Dependency Types:**
+  ····> Function calls
+
+  **Module Colors:**
+  Green: Protocol layer (Phase 6)
+  Yellow: Diagnostics (Phase 7)
+  Cyan: Feature modules (Phase 2)
+  Gray: Utilities (Phase 3)
+
+  **Test Coverage:**
+  ✅ = Unit tests exist and passing
+end legend
+
+@enduml

@@ -1,0 +1,140 @@
+@startuml Module Architecture (After v2.0 Refactoring)
+!theme plain
+title Nova Firmware Module Architecture (v2.0)\nAfter Comprehensive Refactoring
+
+package "Application Layer" {
+  [task_motor.c\n1,207 lines] as TaskMotor
+  [task_ui.c] as TaskUI
+  [task_tapping.c] as TaskTapping
+  [task_depth.c] as TaskDepth
+  [main.c] as Main
+}
+
+package "Feature Modules\n(Phase 2 Extraction)" {
+  [spindle_hold.c\n150 lines\nPhase 2.1] as SpindleHold
+  [jam.c\n282 lines\nPhase 2.3] as Jam
+  [temperature.c\n164 lines\nPhase 2.2] as Temperature
+  [diagnostics.c\n320 lines\nPhase 7] as Diagnostics
+}
+
+package "Control Layer" {
+  [motor.c\n1,038 lines] as Motor
+}
+
+package "Protocol Layer\n(Phase 6)" {
+  [motor_protocol.c\n208 lines\n23 unit tests] as Protocol
+}
+
+package "Utility Layer\n(Phase 3)" {
+  [utilities.c\n25 lines\n7 unit tests] as Utils
+  [shared.h\ndelay_ms()\nMOTOR_CMD] as Shared
+}
+
+package "Hardware Layer" {
+  [USART3\nMotor MCB\n9600 baud] as UART3
+  [USART1\nDebug Console\n9600 baud] as UART1
+  [GPIO\nPD4 Motor Enable] as GPIO
+}
+
+' Dependencies - Application Layer
+TaskMotor --> Motor : motor_*() API
+TaskMotor --> SpindleHold : spindle_hold_*()
+TaskMotor --> Jam : jam_load_update()
+TaskMotor --> Temperature : temp_monitor_update()
+TaskMotor --> Protocol : send_query()\nsend_command()
+TaskMotor --> Diagnostics : diagnostics_*()
+
+TaskUI --> Main : g_event_queue
+TaskTapping --> Main : g_event_queue
+TaskDepth --> Main : g_state (depth)
+
+Main --> Motor : MOTOR_CMD macro
+Main --> Diagnostics : diagnostics_init()
+
+' Dependencies - Feature Layer
+SpindleHold --> Motor : motor_send_command()
+SpindleHold --> Shared : delay_ms()
+
+Jam --> Shared : SEND_EVENT()
+Temperature --> Motor : motor_read_param()
+Temperature --> Shared : SEND_EVENT()
+
+' Dependencies - Control Layer
+Motor --> Protocol : protocol_build_*\nprotocol_parse_*()
+Motor --> Utils : int_to_decimal_str()
+Motor --> Shared : delay_ms()
+Motor --> UART3 : Direct register\naccess
+
+' Dependencies - Protocol Layer
+Protocol --> Utils : int_to_decimal_str()
+
+' Dependencies - Diagnostics
+Diagnostics --> Shared : g_event_queue\ng_motor_cmd_queue
+
+' Hardware access
+TaskMotor --> UART3 : USART3 TX/RX
+TaskMotor --> GPIO : PD4 enable/disable
+Main --> UART1 : Serial console
+
+note right of Protocol
+  **Phase 6: Extracted**
+
+  Reusable protocol layer:
+  • Packet building
+  • Response parsing
+  • Frame validation
+  • Checksum calculation
+
+  Tested: 16 unit tests ✅
+end note
+
+note right of Diagnostics
+  **Phase 7: New Module**
+
+  Real-time monitoring:
+  • UART timeouts
+  • Queue depth/overflows
+  • Protocol statistics
+  • MCB comm health
+  • System uptime
+
+  Commands:
+  STATS, ERRORS, PERF
+end note
+
+note bottom of SpindleHold
+  **Phase 2.1: Extracted**
+  115 lines from task_motor.c
+
+  Powered position lock
+  discovered via logic analyzer
+end note
+
+note bottom of Jam
+  **Phase 2.3: Expanded**
+
+  Multi-mode jam detection:
+  • State-based (startup, stall)
+  • Load-based (sustained, spike)
+end note
+
+note bottom of Temperature
+  **Phase 2.2: Expanded**
+
+  Dual sensor monitoring:
+  • GD32 internal (HMI board)
+  • MCB heatsink (via T0 query)
+
+  Threshold with hysteresis
+end note
+
+note bottom of Utils
+  **Phase 3.3: Created**
+
+  Common helpers:
+  • int_to_decimal_str()
+
+  Tested: 7 unit tests ✅
+end note
+
+@enduml

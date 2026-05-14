@@ -1,0 +1,145 @@
+@startuml Tapping Modes State Machine
+!theme plain
+title Tapping Modes - State Machine\n6 Modes for Automated Tap Reversal
+
+[*] --> MODE_OFF
+
+state "MODE 0: OFF\nNormal Drilling" as MODE_OFF {
+  MODE_OFF : No auto-reversal
+  MODE_OFF : Manual control only
+}
+
+state "MODE 1: PEDAL\nFoot Pedal Trigger" as MODE_PEDAL {
+  state "Waiting" as P_WAIT
+  state "Tapping" as P_TAP
+  state "Reversing" as P_REV
+
+  P_WAIT --> P_TAP : Foot pedal pressed\n(PC3 = LOW)
+  P_TAP --> P_REV : Foot pedal released\n(PC3 = HIGH)
+  P_REV --> P_WAIT : Quill returns to top
+
+  note right of P_TAP
+    Forward while pedal down
+    Reverse when released
+    User controls timing
+  end note
+}
+
+state "MODE 2: SMART\nQuill Direction" as MODE_SMART {
+  state "Descending" as S_DESC
+  state "Ascending" as S_ASC
+
+  S_DESC --> S_ASC : Quill direction reversed\n(depth decreasing)
+  S_ASC --> S_DESC : Quill descending again
+
+  note right of S_DESC
+    Motor forward while descending
+    Auto-reverse when ascending
+    Follows quill movement
+  end note
+}
+
+state "MODE 3: DEPTH\nTarget Depth" as MODE_DEPTH {
+  state "Drilling" as D_DRILL
+  state "At Depth" as D_DEPTH
+  state "Retracting" as D_RET
+
+  D_DRILL --> D_DEPTH : Depth ≥ target
+  D_DEPTH --> D_RET : Auto-reverse
+  D_RET --> D_DRILL : Quill at top
+
+  note right of D_DRILL
+    Forward to target depth
+    Reverse when reached
+    Configurable depth setting
+  end note
+}
+
+state "MODE 4: LOAD\nCV Overshoot Detection" as MODE_LOAD {
+  state "In Material" as L_MAT
+  state "Through Hole" as L_THRU
+  state "Reversing" as L_REV
+
+  L_MAT --> L_THRU : CV ≥ 130% of target
+  note right
+    CV overshoot indicates
+    tap exited material
+    (through-hole detected)
+  end note
+
+  L_THRU --> L_REV : CV burst confirms\n(3× rapid CV queries)
+  L_REV --> L_MAT : Quill at top
+
+  note right of L_THRU
+    **Phase 2.3: Jam Detection**
+
+    Uses jam.c module
+    for load monitoring
+  end note
+}
+
+state "MODE 5: PECK\nTimed Cycles" as MODE_PECK {
+  state "Peck Forward" as PK_FWD
+  state "Peck Reverse" as PK_REV
+  state "Dwell" as PK_DWELL
+
+  PK_FWD --> PK_REV : Timer expires
+  note right: Configurable forward time
+  PK_REV --> PK_DWELL : Timer expires
+  note right: Configurable reverse time
+  PK_DWELL --> PK_FWD : Dwell complete
+  note right: Configurable dwell time
+
+  note right of PK_FWD
+    Rapid peck cycles
+    Stresses queues
+    (10ms queue timeout
+    for responsiveness)
+  end note
+}
+
+MODE_OFF --> MODE_PEDAL : TAP 1
+MODE_OFF --> MODE_SMART : TAP 2
+MODE_OFF --> MODE_DEPTH : TAP 3
+MODE_OFF --> MODE_LOAD : TAP 4
+MODE_OFF --> MODE_PECK : TAP 5
+
+MODE_PEDAL --> MODE_OFF : TAP 0
+MODE_SMART --> MODE_OFF : TAP 0
+MODE_DEPTH --> MODE_OFF : TAP 0
+MODE_LOAD --> MODE_OFF : TAP 0
+MODE_PECK --> MODE_OFF : TAP 0
+
+note bottom
+  **Tapping Task (20Hz, Priority 3)**
+
+  Monitors:
+  • Quill depth (from task_depth via g_state)
+  • Motor status (motor_running from g_state)
+  • Foot pedal (PC3 GPIO)
+  • CV (actual motor speed from MCB)
+
+  Commands Motor via:
+  • MOTOR_CMD(CMD_MOTOR_TAP_FORWARD)
+  • MOTOR_CMD(CMD_MOTOR_TAP_REVERSE)
+  • MOTOR_CMD(CMD_MOTOR_STOP)
+
+  All commands checked for queue overflow (Phase 1.2)
+  Emergency stop if motor queue full
+end note
+
+note right of MODE_LOAD
+  **CV Burst Pattern**
+  (discovered 2026-01-25)
+
+  Before reversal:
+  1. Detect CV > 130% target
+  2. Query CV × 3 rapidly (50ms apart)
+  3. Average readings
+  4. Confirm overshoot
+  5. Trigger reversal
+
+  Prevents false triggers
+end note
+
+@enduml

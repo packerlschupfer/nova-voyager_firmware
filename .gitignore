@@ -1,0 +1,41 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+compile_commands.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.o
+*.a
+*.elf
+*.bin
+*.dfu
+*.hex
+*.map
+
+# Python
+__pycache__/
+*.pyc
+tests/__pycache__/
+
+# Backups / scratch
+*.backup_full
+*.backup_working
+*.bak
+*.orig
+
+# Debug / capture artifacts
+debug_pics/
+*.log
+*.tmp
+
+# Tooling-specific
+.claude/
+.DS_Store

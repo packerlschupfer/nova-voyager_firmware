@@ -1,0 +1,166 @@
+@startuml Boot Sequence Flow
+!theme plain
+title Nova Firmware Boot Sequence (Phase 8 Refactored)\nFrom Power-On to Ready State
+
+start
+
+:Power-On / Reset;
+
+:**HAL_Init()**
+Initialize STM32 HAL;
+
+:**SystemClock_Config()**
+Set 120MHz (GD32F303);
+
+:**detect_boot_type()**
+Check RCC reset flags;
+
+if (Cold boot magic set?) then (yes)
+  :g_boot_type = BOOT_COLD;
+  :Clear magic flag;
+else (no)
+  if (Watchdog reset?) then (yes)
+    :g_boot_type = BOOT_WATCHDOG;
+    note right
+      System crashed
+      Will show warning
+    end note
+  elseif (Software reset?) then (yes)
+    :g_boot_type = BOOT_SOFT;
+    note right: OFF button pressed
+  else (power-on)
+    :g_boot_type = BOOT_COLD;
+  endif
+endif
+
+if (Full boot?) then (COLD or WATCHDOG)
+  :Show splash screen;
+  :Beep sequence;
+else (SOFT boot)
+  :Skip splash (fast boot);
+endif
+
+:Initialize peripherals;
+note right
+  • GPIO (buttons, encoder, LCD)
+  • ADC (depth sensor)
+  • USART1 (debug console)
+  • USART3 (motor MCB)
+  • IWDG (watchdog)
+end note
+
+:**settings_init()**
+Load from EEPROM/Flash;
+
+:**crash_dump_init()**
+Check for crashes;
+
+:**diagnostics_init()**
+Phase 7: Reset counters;
+
+:Create FreeRTOS objects
+queues, mutexes, tasks;
+
+:Apply settings to g_state;
+
+:Start FreeRTOS scheduler;
+
+partition "Motor Task Init (Phase 8)" {
+  :task_motor() starts;
+
+  :Boot timing reference (t0);
+
+  :init_mcb_boot_sequence(full_init, t0);
+
+  partition "MCB Initialization" {
+    :Wait 50ms for MCB power-up;
+
+    :Safety stop sequence
+    RS=0 × 3;
+    note right: Ensure motor stopped
+
+    :Query MCB version (GV);
+    note right
+      Gets "B1.7" etc.
+      Stored in mcb_version[]
+    end note
+
+    :Query S2 (fallback speed);
+
+    if (Full init?) then (yes)
+      :init_wait_for_mcb_ready(t0);
+
+      while (GF bit 3 set?) is (yes)
+        :Query GF flags;
+        :delay_ms(10);
+        if (Timeout > 500ms?) then (yes)
+          :Log WARNING;
+          stop
+        endif
+      endwhile (bit 3 clear)
+
+      :MCB ready!;
+
+      :Set forward direction
+      JF=1706;
+
+      :Send EVT_BOOT_COMPLETE;
+    else (soft boot)
+      :Minimal init;
+    endif
+  }
+
+  :Enter main motor task loop;
+}
+
+partition "Main Task" {
+  :Wait for events;
+
+  while (Forever) is (running)
+    :xQueueReceive(g_event_queue);
+    :Process event;
+    :Check all task heartbeats;
+
+    if (All tasks alive?) then (yes)
+      :Refresh watchdog
+      IWDG->KR = 0xAAAA;
+    else (task hung)
+      :Don't refresh watchdog;
+      note right: System will reset in 3s
+    endif
+
+    :Serial console
+    command processing;
+  endwhile
+}
+
+stop
+
+note right of "detect_boot_type()"
+  **Boot Types:**
+  • COLD: Power-on (full init)
+  • SOFT: OFF button (fast boot)
+  • WATCHDOG: Crash recovery
+  • PIN: External reset
+end note
+
+note right of "init_mcb_boot_sequence()"
+  **Phase 8: Refactored**
+
+  Before: 110+ lines inline
+  After: Clean helper function
+
+  Separated boot-time from runtime logic
+end note
+
+note right of "init_wait_for_mcb_ready()"
+  **MCB Ready Detection**
+
+  Wait for GF bit 3 to clear
+  Indicates MCB initialization complete
+
+  Discovered via reverse engineering
+  original firmware @ 0x801a51a
+end note
+
+@enduml

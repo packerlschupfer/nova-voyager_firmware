@@ -1,0 +1,16 @@
+#!/bin/bash
+# Serial command wrapper for Nova Voyager
+# Usage: nova-serial COMMAND
+#   e.g.: nova-serial STATUS
+#         nova-serial "TAP 1"
+
+PI_HOST="192.168.16.62"
+PI_USER="pi"
+
+if [ -z "$1" ]; then
+    echo "Usage: nova-serial COMMAND"
+    echo "Commands: HELP, STATUS, DFU, RESET, TAP [0|1|2], GF, RS, DEPTH, etc."
+    exit 1
+fi
+
+ssh "$PI_USER@$PI_HOST" "python3 /home/pi/serial_cmd.py '$1'"

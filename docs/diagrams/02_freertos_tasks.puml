@@ -1,0 +1,129 @@
+@startuml FreeRTOS Task Communication
+!theme plain
+title Nova Firmware FreeRTOS Architecture\n5 Tasks, 2 Queues, 3 Mutexes
+
+participant "Main Task\nPriority: 1\n256B stack" as Main
+participant "UI Task\nPriority: 2\n192B stack" as UI
+participant "Depth Task\nPriority: 2\n128B stack" as Depth
+participant "Tapping Task\nPriority: 3\n192B stack" as Tapping
+participant "Motor Task\nPriority: 4\n160B stack" as Motor
+
+queue "g_event_queue\n32 events\n4 bytes each" as EventQ
+queue "g_motor_cmd_queue\n16 commands\n8 bytes each" as MotorQ
+database "g_state\n(protected by\ng_state_mutex)" as State
+database "Motor UART\n(protected by\ng_motor_mutex)" as UART
+
+== Initialization (Boot Sequence) ==
+
+Main -> Main : detect_boot_type()
+Main -> Main : diagnostics_init()
+Main -> Main : settings_init()
+Main -> Main : Create queues/mutexes
+Main -> Motor : xTaskCreate(motor)
+Main -> Depth : xTaskCreate(depth)
+Main -> UI : xTaskCreate(ui)
+Main -> Tapping : xTaskCreate(tapping)
+Main -> Main : vTaskStartScheduler()
+
+== Runtime Operation (Periodic Cycles) ==
+
+group Motor Task (10Hz - Highest Priority)
+  Motor -> Motor : xQueueReceive(motor_cmd_queue)
+  Motor -> UART : motor_query_status()
+  note right: Send GF query via USART3\nProtected by g_motor_mutex
+  Motor -> State : Update motor_running, motor_forward
+  note right: Protected by g_state_mutex
+  Motor -> Motor : spindle_hold_update()
+  Motor -> Motor : HEARTBEAT_UPDATE_MOTOR()
+end
+
+group UI Task (50Hz)
+  UI -> UI : Read buttons/encoder
+  UI -> EventQ : xQueueSend(EVT_BTN_*)
+  UI -> State : Read state for LCD
+  UI -> UI : Update LCD display
+  UI -> UI : HEARTBEAT_UPDATE_UI()
+end
+
+group Depth Task (50Hz)
+  Depth -> Depth : Read ADC (quill depth)
+  Depth -> State : Update depth_mm
+  Depth -> Depth : HEARTBEAT_UPDATE_DEPTH()
+end
+
+group Tapping Task (20Hz)
+  Tapping -> State : Read motor_running, depth
+  Tapping -> Tapping : Tapping state machine
+  alt Tapping mode active
+    Tapping -> MotorQ : xQueueSend(CMD_MOTOR_*)
+    note right: Motor commands\n(start, stop, reverse)
+  end
+  Tapping -> Tapping : HEARTBEAT_UPDATE_TAPPING()
+end
+
+group Main Task (100Hz - Lowest Priority)
+  Main -> EventQ : xQueueReceive(event)
+  Main -> Main : Process event\n(handle_event)
+  alt Motor command event
+    Main -> MotorQ : xQueueSend(CMD_MOTOR_*)
+  end
+  Main -> Main : Check all heartbeats
+  alt All tasks alive
+    Main -> Main : IWDG->KR = 0xAAAA
+    note right: Refresh watchdog\nonly if all tasks OK
+  end
+  Main -> Main : Serial console\ncommand processing
+end
+
+== Queue Overflow Protection (Phase 1.2) ==
+
+Tapping -> MotorQ : xQueueSend(CMD_MOTOR_START)
+alt Queue Full
+  MotorQ --> Tapping : pdFAIL
+  Tapping -> Diagnostics : diagnostics_queue_overflow(true)
+  Tapping -> EventQ : SEND_EVENT(EVT_MOTOR_FAULT)
+  Tapping -> Motor : motor_emergency_stop()
+  note right: Hardware PD4 disable\n+ RS command
+end
+
+== Mutex Protection ==
+
+group Motor UART Access
+  Motor -> UART : xSemaphoreTake(g_motor_mutex)
+  Motor -> UART : Send protocol packet
+  Motor -> UART : Wait for response
+  Motor -> UART : xSemaphoreGive(g_motor_mutex)
+end
+
+group Shared State Access
+  UI -> State : xSemaphoreTake(g_state_mutex)
+  UI -> State : Read target_rpm for display
+  UI -> State : xSemaphoreGive(g_state_mutex)
+end
+
+note over Main, Motor
+  **Watchdog Safety (Phase 1)**
+
+  Each task updates heartbeat counter every cycle
+  Main task only refreshes watchdog if ALL tasks alive
+  Watchdog timeout: 3 seconds
+
+  If any task hangs → watchdog reset → CRASHSHOW logs it
+end note
+
+note over EventQ
+  **Phase 1.2: Overflow Handling**
+
+  All xQueueSend() calls check return value
+  Overflow → log warning + diagnostics counter
+  Motor queue overflow → emergency stop
+end note
+
+note over MotorQ
+  **Phase 5.3: Peak Monitoring**
+
+  diagnostics.c tracks queue depth high-water marks
+  View via PERF command
+end note
+
+@enduml
