@@ -1,0 +1,192 @@
+@startuml Diagnostics System Architecture
+!theme plain
+title Diagnostics System (Phase 7)\nComprehensive System Health Monitoring
+
+package "Monitored Components" {
+  component "UART Layer" as UART {
+    [uart_send_byte()]
+    [uart_read_byte()]
+  }
+
+  component "Protocol Layer" as Protocol {
+    [send_query()]
+    [send_command()]
+  }
+
+  component "Queue Layer" as Queues {
+    [g_event_queue]
+    [g_motor_cmd_queue]
+  }
+
+  component "MCB Communication" as MCB {
+    [motor_query_status()]
+    [motor_read_param()]
+  }
+
+  component "System" as System {
+    [Watchdog]
+    [Uptime]
+  }
+}
+
+component "diagnostics.c\n320 lines" as Diagnostics {
+  database "Counters" {
+    [uart_tx_timeouts]
+    [uart_rx_timeouts]
+    [uart_bytes_sent]
+    [uart_bytes_received]
+    [event_queue_overflows]
+    [motor_queue_overflows]
+    [event_queue_peak]
+    [motor_queue_peak]
+    [protocol_checksum_errors]
+    [protocol_frame_errors]
+    [protocol_timeout_errors]
+    [protocol_commands_sent]
+    [protocol_queries_sent]
+    [protocol_retries]
+    [mcb_comm_failures]
+    [mcb_comm_success]
+    [mcb_total_queries]
+    [boot_timestamp_ms]
+    [watchdog_refresh_count]
+  }
+
+  component "API Functions" {
+    [diagnostics_uart_tx_timeout()]
+    [diagnostics_uart_rx_timeout()]
+    [diagnostics_uart_tx_bytes()]
+    [diagnostics_uart_rx_bytes()]
+    [diagnostics_queue_overflow()]
+    [diagnostics_queue_update_peak()]
+    [diagnostics_protocol_error()]
+    [diagnostics_protocol_sent()]
+    [diagnostics_protocol_retry()]
+    [diagnostics_mcb_comm()]
+    [diagnostics_watchdog_refresh()]
+  }
+
+  component "Reporting" {
+    [diagnostics_print_report()]
+    [diagnostics_print_errors()]
+    [diagnostics_print_performance()]
+  }
+}
+
+actor "User" as User
+
+' Data flow from components to diagnostics
+UART --> Diagnostics : TX/RX timeouts\nBytes sent/received
+Protocol --> Diagnostics : Commands sent\nQueries sent\nErrors, retries
+Queues --> Diagnostics : Overflows\nPeak depth
+MCB --> Diagnostics : Comm success/failure
+System --> Diagnostics : Watchdog refreshes\nUptime
+
+' User access to reports
+User --> Diagnostics : STATS command
+Diagnostics --> User : Full report
+
+User --> Diagnostics : ERRORS command
+Diagnostics --> User : Error summary
+
+User --> Diagnostics : PERF command
+Diagnostics --> User : Performance metrics
+
+note right of UART
+  **Phase 1.1: UART Timeouts**
+
+  All UART operations have
+  10-100ms tick-based timeouts
+
+  On timeout:
+  • Log error message
+  • Call diagnostics_uart_*_timeout()
+  • Return error to caller
+
+  Tracked: TX/RX timeout counts
+end note
+
+note right of Protocol
+  **Phase 6: Protocol Layer**
+
+  Tracks all MCB communication:
+  • Commands sent (RS, ST, SV, etc.)
+  • Queries sent (GF, CV, T0, etc.)
+  • Protocol errors
+  • Retry attempts
+
+  Helps diagnose MCB issues
+end note
+
+note right of Queues
+  **Phase 1.2 & 5.3:**
+
+  • Overflow detection
+  • Peak depth tracking
+  • Real-time monitoring
+
+  Shows queue utilization:
+  Event: X / 32 (peak: Y)
+  Motor: X / 16 (peak: Y)
+end note
+
+note bottom of Diagnostics
+  **STATS Command Output:**
+
+  ╔════════════════════════════════════╗
+  ║  SYSTEM DIAGNOSTICS REPORT         ║
+  ╚════════════════════════════════════╝
+
+  UPTIME: 1h 23m 45s
+  Watchdog refreshes: 5,025
+
+  ─── UART Statistics ───
+  TX bytes: 12,450
+  RX bytes: 8,923
+  TX timeouts: 0
+  RX timeouts: 0
+
+  ─── Queue Statistics ───
+  Event Queue: 0 / 32 (peak: 3)
+  Motor Queue: 0 / 16 (peak: 2)
+  Event overflows: 0
+  Motor overflows: 0
+
+  ─── Protocol Statistics ───
+  Commands sent: 45
+  Queries sent: 1,234
+  Retries: 0
+  Checksum errors: 0
+  Frame errors: 0
+  Timeouts: 0
+
+  ─── MCB Communication ───
+  Total queries: 1,234
+  Successful: 1,234
+  Failed: 0
+  Success rate: 100%
+end note
+
+note bottom of User
+  **Usage Scenarios:**
+
+  **Before testing:**
+  > STATS
+  Record baseline values
+
+  **After stress test:**
+  > ERRORS
+  Quick check (should be clean)
+
+  **Troubleshooting:**
+  > STATS
+  Check MCB comm health,
+  queue peaks, error counts
+
+  **Performance analysis:**
+  > PERF
+  Throughput, uptime,
+  utilization metrics
+end note
+
+@enduml

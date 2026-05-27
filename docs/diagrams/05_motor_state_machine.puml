@@ -1,0 +1,92 @@
+@startuml Motor State Machine
+!theme plain
+title Motor Control State Machine\nWith Safety Features (Phases 1-2)
+
+[*] --> STOPPED : Power-On
+
+state "STOPPED\nGF=32 (forward)\nGF=436 (reverse)" as STOPPED {
+  state "Hardware Disabled\nPD4=LOW" as HW_OFF
+  state "Spindle Hold\nCL=10-12%\nPhase 2.1" as HOLD
+
+  HW_OFF --> HOLD : HOLD command
+  HOLD --> HW_OFF : RELEASE command
+  HOLD : Powered position lock
+  HOLD : Maintains every 460ms
+
+  note right of HOLD
+    **Spindle Hold Module**
+
+    Manual: CL=10%, no timeout
+    Safety: CL=12%, 2s timeout
+
+    Discovered via logic analyzer
+  end note
+}
+
+state "RUNNING\nGF=34 (forward)\nGF=438 (reverse)" as RUNNING {
+  state "Normal Operation\nCL=100%" as NORMAL
+  state "Jam Detected\nPhase 2.3" as JAM
+  state "Overheat\nPhase 2.2" as OVERHEAT
+
+  NORMAL --> JAM : Load ≥ 90%\nfor 5 seconds
+  NORMAL --> OVERHEAT : Temp ≥ 80°C
+
+  JAM : Auto-stop motor
+  JAM : Send EVT_JAM_DETECTED
+  OVERHEAT : Auto-stop motor
+  OVERHEAT : Send EVT_OVERHEAT
+}
+
+STOPPED --> RUNNING : START command\nCL=100%, ST, SV
+
+RUNNING --> STOPPED : STOP command\nRS=0, hardware disable
+
+state "ERROR\nGF bit 14 set\n(≥ 16929)" as ERROR {
+  state "Communication Fault\nPhase 1.1" as COMM_FAULT
+  state "MCB Fault\nBit patterns" as MCB_FAULT
+
+  note right of COMM_FAULT
+    **Phase 1: Safety**
+
+    5 consecutive comm failures
+    → Trigger fault
+    → Emergency stop
+    → Hardware disable
+  end note
+}
+
+RUNNING --> ERROR : GF response\nbit 14 set
+STOPPED --> ERROR : Comm timeout
+
+ERROR --> STOPPED : Clear fault\nReset
+
+note right of STOPPED
+  **Phase 1: Hardware Failsafe**
+
+  If UART timeout during STOP:
+  1. Log "[STOP] UART timeout"
+  2. motor_hardware_disable()
+     (PD4=LOW - immediate cutoff)
+  3. Increment diagnostics counter
+
+  Motor ALWAYS stops safely
+end note
+
+note bottom
+  **Motor States (discovered via reverse engineering):**
+
+  GF=32:  STOPPED, forward direction
+  GF=34:  RUNNING, forward direction
+  GF=436: STOPPED, reverse direction
+  GF=438: RUNNING, reverse direction
+  GF≥16929: ERROR state (bit 14 set)
+
+  **Safety Features:**
+  • Jam detection: Load monitoring (Phase 2.3)
+  • Temperature: Threshold with hysteresis (Phase 2.2)
+  • Spindle hold: Position lock (Phase 2.1)
+  • UART timeout: Cannot hang (Phase 1.1)
+  • Hardware failsafe: PD4 disable (Phase 1.1b)
+end note
+
+@enduml

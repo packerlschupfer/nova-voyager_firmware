@@ -1,0 +1,199 @@
+@startuml Error Handling Flow
+!theme plain
+title Error Handling and Safety Features\nPhase 1: Critical Safety Fixes
+
+start
+
+partition "UART Communication (Phase 1.1)" {
+  :Send UART byte;
+
+  :Start timeout timer
+  (xTaskGetTickCount);
+
+  while (TX register not empty?) is (busy)
+    if (Timeout > 10ms?) then (yes)
+      :Log "[TX] timeout";
+      :diagnostics_uart_tx_timeout();
+      #pink:**Return FALSE**;
+      stop
+    endif
+  endwhile (ready)
+
+  :Transmit byte;
+  :diagnostics_uart_tx_bytes(1);
+  #lightgreen:**Return TRUE**;
+}
+
+partition "Motor Command Queue (Phase 1.2)" {
+  :MOTOR_CMD(cmd, param);
+
+  :xQueueSend(g_motor_cmd_queue,\ntimeout=10ms);
+
+  if (Queue send successful?) then (yes)
+    :Command queued;
+    #lightgreen:**Success**;
+  else (QUEUE FULL)
+    :Log "Motor cmd queue full";
+    :diagnostics_queue_overflow(true);
+    :g_state.motor_queue_overflows++;
+
+    if (Critical command?) then (yes)
+      #pink:**EMERGENCY STOP**;
+      :motor_emergency_stop();
+      note right
+        Phase 1.2: Critical path
+        Hardware disable + stop
+      end note
+    else (normal)
+      :SEND_EVENT(EVT_MOTOR_FAULT);
+    endif
+  endif
+}
+
+partition "Motor Stop Sequence (Phase 1.1b)" {
+  :local_motor_stop() called;
+
+  :send_command(CMD_STOP, 0);
+
+  if (UART timeout?) then (yes)
+    :Log "[STOP] UART timeout";
+    #pink:**Hardware Failsafe**;
+    :motor_hardware_disable();
+    note right
+      Phase 1.1b: Safety
+      PD4=LOW (immediate cutoff)
+      Motor stops even if
+      UART communication fails
+    end note
+  else (success)
+    :STOP command sent;
+  endif
+
+  :motor_enabled = false;
+  :g_state.motor_running = false;
+  #lightgreen:**Motor Stopped**;
+}
+
+partition "Communication Failure Tracking (H5)" {
+  :motor_query_status();
+
+  :send_query(CMD_GET_FLAGS);
+
+  if (Response received?) then (yes)
+    :consecutive_comm_failures = 0;
+    :diagnostics_mcb_comm(true);
+    #lightgreen:**Reset counter**;
+  else (TIMEOUT)
+    :consecutive_comm_failures++;
+    :diagnostics_mcb_comm(false);
+
+    if (Failures ≥ 5?) then (yes)
+      #pink:**COMM FAULT**;
+      :motor_enabled = false;
+      :g_state.motor_fault = true;
+      :SEND_EVENT(EVT_MOTOR_FAULT);
+      note right
+        5 consecutive failures
+        → Trigger fault
+        → Stop motor
+      end note
+    endif
+  endif
+}
+
+partition "Jam Detection (Phase 2.3)" {
+  :GF response: load=95%;
+
+  :jam_load_update(load, is_running, settings);
+
+  if (Load ≥ 90%?) then (yes)
+    if (First time?) then (yes)
+      :Start 5-second timer;
+    else (sustained)
+      if (Timer ≥ 5000ms?) then (yes)
+        #pink:**JAM DETECTED**;
+        :trigger_jam(JAM_LOAD_SUSTAINED);
+        :local_motor_stop();
+        :SEND_EVENT(EVT_JAM_DETECTED);
+        stop
+      endif
+    endif
+
+    if (Load ≥ spike_threshold?) then (yes)
+      #pink:**LOAD SPIKE**;
+      :trigger_jam(JAM_LOAD_SPIKE);
+      :local_motor_stop();
+      :SEND_EVENT(EVT_LOAD_SPIKE);
+      stop
+    endif
+  else (normal)
+    :Reset jam timer;
+  endif
+}
+
+partition "Temperature Monitoring (Phase 2.2)" {
+  :GF response: temp=65°C;
+
+  :temp_monitor_update(temp, threshold=60);
+
+  if (Temp ≥ 80°C?) then (CRITICAL)
+    #pink:**OVERHEAT SHUTDOWN**;
+    :local_motor_stop();
+    :SEND_EVENT(EVT_OVERHEAT);
+    note right: Critical overheat (80°C)
+    stop
+  elseif (Temp ≥ 60°C?) then (WARNING)
+    if (First time?) then (yes)
+      :temp_warning_active = true;
+      :SEND_EVENT(EVT_TEMP_WARNING);
+      note right: Warning threshold (60°C)
+    endif
+  elseif (Temp < 55°C?) then (RECOVERY)
+    :temp_warning_active = false;
+    note right: Hysteresis (5°C)
+  endif
+}
+
+partition "Diagnostics Tracking (Phase 7)" {
+  :Error occurs;
+
+  :diagnostics_*() function called;
+
+  :Increment appropriate counter;
+
+  note right
+    Tracked errors:
+    • UART TX/RX timeouts
+    • Queue overflows
+    • Protocol errors
+    • MCB comm failures
+
+    View via:
+    • STATS (full report)
+    • ERRORS (summary)
+    • PERF (performance)
+  end note
+
+  :Continue operation;
+  note right
+    System logs errors
+    but continues running
+    (graceful degradation)
+  end note
+}
+
+stop
+
+note right
+  **Error Recovery Philosophy**
+
+  1. Detect error (timeout, overflow, fault)
+  2. Log error (serial console + diagnostics)
+  3. Take safety action (stop motor if critical)
+  4. Continue operation if possible
+  5. Track in diagnostics for analysis
+
+  Result: System never hangs, always recovers
+end note
+
+@enduml

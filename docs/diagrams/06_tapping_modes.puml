@@ -1,0 +1,64 @@
+@startuml Tapping Trigger System
+!theme plain
+title Tapping System — 7 Combinable Triggers\nEnable any subset; arm with F2; highest-priority trigger wins
+
+[*] --> IDLE
+
+state "IDLE\n(tapping_armed = false)" as IDLE {
+  IDLE : Triggers configured but inactive
+  IDLE : Motor runs normally (DRL state)
+}
+
+state "ARMED\n(tapping_armed = true)" as ARMED {
+  state "Monitoring" as MON
+  state "Triggered" as TRIG
+  state "Reversing" as REV
+  state "Completing" as COMP
+
+  MON --> TRIG : Any enabled trigger fires
+  TRIG --> REV : CMD_MOTOR_TAP_REVERSE\n(polls GF bit 2 for direction change)
+  REV --> COMP : Completion action\n(Stop / RevOut / RevTime)
+  COMP --> MON : Cycle complete
+}
+
+IDLE --> ARMED : F2 press\n(at least 1 trigger enabled)
+ARMED --> IDLE : F2 press (disarm)\nor motor stopped
+
+note right of ARMED
+  **7 Triggers (combinable)**
+
+  | Code | Trigger | Priority |
+  | P | Pedal | 1 (highest) |
+  | Q | Quill | 2 |
+  | D | Depth | 3 |
+  | I | Load Inc | 4 |
+  | S | Load Slip | 4 |
+  | C | Clutch | 4 |
+  | K | Peck | 5 (lowest) |
+
+  Enable in Menu > Tapping
+  Display: "DIQ" = Depth+Inc+Quill active
+end note
+
+note bottom
+  **Tapping Task (20Hz, Priority 3)**
+
+  Reads from g_state:
+  • current_depth, motor_running
+  • motor_load (KR), motor_forward
+  • tapping_armed, pedal_pressed
+
+  Checks settings_get():
+  • Individual trigger enables
+  • Per-trigger thresholds/timing
+
+  Commands Motor via queue:
+  • CMD_MOTOR_TAP_FORWARD
+  • CMD_MOTOR_TAP_REVERSE
+  • CMD_MOTOR_STOP
+
+  Direction change uses GF bit 2 polling
+  (waits for MCB commutation switch complete)
+end note
+
+@enduml

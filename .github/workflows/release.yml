@@ -1,0 +1,74 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        # Pinned, not --upgrade: an unpinned core resolves whatever is newest
+        # that day, which is how the v0.1.0 release binary ended up differing
+        # from the locally built, hardware-validated one. Bump deliberately,
+        # together with the platform/package pins in platformio.ini.
+        run: pip install platformio==6.1.19
+
+      # Fail loudly if the pins are not actually enforced. A pin declared in
+      # [common] but not referenced by an env is silently ignored — that is how
+      # the first v0.1.0 release ended up built against a different HAL than the
+      # hardware-validated binary.
+      - name: Verify toolchain pins are enforced
+        run: ./scripts/check-pins.sh nova_voyager
+      # A gate nothing calls is not a gate. v0.1.0 shipped with ALIGN
+      # energizing the spindle without consulting safety_can_start_motor().
+      - name: Verify the motor safety gate is not bypassed
+        run: ./scripts/check-safety-gate.sh
+      # The native suite compiles no src/, so test_settings' mirrored copy of
+      # settings_t IS the coverage. When it drifts the tests keep passing while
+      # exercising a layout the firmware does not ship.
+      - name: Verify the settings test mirror matches the header
+        run: ./scripts/check-settings-mirror.sh
+      - name: Build release firmware
+        run: pio run -e nova_voyager -e nova_voyager_games -e nova_voyager_demo
+
+      # Each env writes to .pio/build/<env>/firmware.{bin,elf} — copy out with
+      # the env name as prefix so the release assets don't collide.
+      - name: Collect release artifacts
+        run: |
+          mkdir -p release
+          for env in nova_voyager nova_voyager_games nova_voyager_demo; do
+            for ext in bin elf; do
+              src=".pio/build/$env/firmware.$ext"
+              if [ -f "$src" ]; then
+                cp "$src" "release/${env}.${ext}"
+              fi
+            done
+          done
+          (cd release && sha256sum * > sha256sums.txt)
+          ls -la release/
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

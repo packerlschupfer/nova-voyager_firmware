@@ -1,0 +1,138 @@
+@startuml Motor Controller Protocol
+!theme plain
+title Motor Controller Serial Protocol (9600 baud USART3)\nPhase 6: Protocol Layer Abstraction
+
+actor "HMI\n(Nova Firmware)" as HMI
+participant "motor_protocol.c\n(Phase 6)" as Proto
+participant "USART3\n(PB10/PB11)" as UART
+participant "Motor Controller\n(MCB)" as MCB
+
+== QUERY Format (Read Status/Parameters) ==
+
+HMI -> Proto : protocol_build_query(CMD_GET_FLAGS)
+activate Proto
+Proto -> Proto : Build packet:\n[SOH]['0']['0']['1']['1']['1'][CMD_H][CMD_L][ENQ]
+Proto --> HMI : packet, length
+deactivate Proto
+
+HMI -> UART : Send 9 bytes
+note right
+  [0x04]['0']['0']['1']['1']['1']['G']['F'][0x05]
+  No checksum for queries!
+end note
+
+UART -> MCB : Query packet
+
+MCB -> UART : Response:\n[SOH]['0']['0']['1']['1'][STX]['1']['G']['F'][value][ETX][XOR]
+UART -> HMI : Receive response
+
+HMI -> Proto : protocol_validate_response(response)
+activate Proto
+Proto -> Proto : Check SOH, address, STX
+Proto --> HMI : offset (6)
+deactivate Proto
+
+HMI -> Proto : protocol_parse_field(data, offset+4, len)
+activate Proto
+Proto -> Proto : Parse ASCII decimal
+Proto --> HMI : flags value (e.g., 32, 34, 436, 438)
+deactivate Proto
+
+== COMMAND Format (Set Parameters) ==
+
+HMI -> Proto : protocol_build_command(CMD_SET_SPEED, 1200)
+activate Proto
+Proto -> Proto : Build header
+Proto -> Utils : int_to_decimal_str(1200)
+Utils --> Proto : "0021" (reversed)
+Proto -> Proto : Add param: "1200"
+Proto -> Proto : Calculate XOR checksum\nfrom unit byte to ETX
+Proto --> HMI : packet, length
+deactivate Proto
+
+HMI -> UART : Send packet
+note right
+  [SOH]['0']['0']['1']['1'][STX]['1']['S']['V']
+  ['1']['2']['0']['0'][ETX][XOR]
+
+  Checksum = '1' ^ 'S' ^ 'V' ^ '1' ^ '2' ^ '0' ^ '0' ^ ETX
+end note
+
+UART -> MCB : Command packet
+
+MCB -> UART : ACK or Response
+UART -> HMI : Receive response
+
+== Error Handling (Phase 1.1 + 7) ==
+
+HMI -> UART : Send byte
+activate UART
+
+alt UART TX Timeout (Phase 1.1)
+  UART --> HMI : Timeout (10ms)
+  HMI -> HMI : Log "[CMD] TX timeout"
+  HMI -> Diagnostics : diagnostics_uart_tx_timeout()
+  HMI -> Diagnostics : diagnostics_protocol_error(2)
+else Success
+  UART -> MCB : Byte transmitted
+  HMI -> Diagnostics : diagnostics_uart_tx_bytes(1)
+  HMI -> Diagnostics : diagnostics_protocol_sent()
+end
+
+deactivate UART
+
+== Typical Motor Start Sequence ==
+
+group Motor Start (from task_motor.c)
+  HMI -> MCB : send_command(CMD_CURRENT_LIMIT, 100)
+  note right: CL=100% for full power
+  HMI -> MCB : delay_ms(20)
+
+  HMI -> MCB : send_command(CMD_START, 0)
+  note right: ST command
+  HMI -> MCB : delay_ms(20)
+
+  HMI -> MCB : send_command(CMD_SET_SPEED, 1200)
+  note right: SV=1200 RPM
+  HMI -> MCB : delay_ms(20)
+end
+
+group Motor Status Polling (10Hz)
+  HMI -> MCB : send_query(CMD_GET_FLAGS)
+  MCB --> HMI : flags,speed,load,vib,temp
+  note right
+    GF response can be:
+    • Single value: flags only (e.g., "34")
+    • CSV: flags,speed,load,vib,temp
+  end note
+
+  HMI -> Proto : protocol_parse_gf_response(response)
+  Proto --> HMI : Parsed values
+  HMI -> Diagnostics : diagnostics_mcb_comm(true)
+end
+
+== Protocol Packet Formats ==
+
+note over Proto
+  **QUERY Packet** (9 bytes):
+  [SOH]['0']['0']['1']['1']['1'][CMD_H][CMD_L][ENQ]
+   0x04                                          0x05
+
+  Position 5 is '1' (0x31), NOT STX!
+  No checksum!
+
+  **COMMAND Packet** (variable length):
+  [SOH]['0']['0']['1']['1'][STX]['1'][CMD_H][CMD_L][param_ascii][ETX][XOR]
+   0x04                    0x02                                   0x03
+
+  • param_ascii: Decimal ASCII (can be negative)
+  • Checksum: XOR from position 6 (unit byte) to ETX (inclusive)
+
+  **RESPONSE Packet**:
+  [ACK?][SOH]['0']['0']['1']['1'][STX]['1'][cmd_echo][data][ETX][XOR]
+   0x06  0x04                    0x02
+
+  ACK (0x06) is optional
+end note
+
+@enduml

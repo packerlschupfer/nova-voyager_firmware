@@ -1,0 +1,29 @@
+[env:lcd_test]
+platform = ststm32
+board = genericSTM32F103RC
+framework = stm32cube
+
+build_flags =
+    -I include
+    -D USE_120MHZ=1
+    -D GD32F303=1
+    -D VECT_TAB_OFFSET=0x3000
+    -std=c11
+    -Os
+    -DLCD_TEST_ONLY=1  ; Dedicated LCD test build
+
+upload_protocol = stlink
+debug_tool = stlink
+
+; Minimal build - only LCD test code
+build_src_filter =
+    +<init.c>
+    +<lcd.c>
+    +<lcd_graphics.c>
+    +<gfx_tests.c>
+    +<gfx_minimal_test.c>
+    +<serial_console.c>
+    +<startup_gd32.s>
+    -<*>  ; Exclude everything else
+
+monitor_speed = 9600
