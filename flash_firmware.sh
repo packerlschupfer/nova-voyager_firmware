@@ -240,6 +240,14 @@ erase_and_flash_both() {
     #    runtime, so st-flash alone answers "Flash memory is write protected"
     #    whenever stock is running. Erasing under OpenOCD leaves nothing
     #    running to re-protect, which is why the writes then succeed.
+    #
+    # Every command substitution below ends in `|| true` and must keep doing so.
+    # `set -e` is on, and a plain assignment `x=$(cmd)` propagates cmd's exit
+    # status. OpenOCD exits non-zero after `shutdown`, and `grep -c` exits 1 on
+    # a count of zero - so without those guards the shell aborts mid-function
+    # and every explicit check here becomes unreachable. That is not academic:
+    # on 2026-09-05 the erase ran, the assignment aborted the script before the
+    # writes, and the board was left blank with nothing printed to say so.
     scp "$bl_file" "$PI_HOST:/tmp/bootloader.bin"
     scp "$fw_file" "$PI_HOST:/tmp/firmware.bin"
 
@@ -254,8 +262,8 @@ erase_and_flash_both() {
         -c 'stm32f1x unlock 0' \
         -c 'reset halt' \
         -c 'flash erase_sector 0 0 last' \
-        -c 'shutdown'" 2>&1)
-    echo "$erase_out" | grep -E "unlocked|erased sectors|Error" | head -5
+        -c 'shutdown'" 2>&1) || true
+    echo "$erase_out" | grep -E "unlocked|erased sectors|Error" | head -5 || true
 
     if ! echo "$erase_out" | grep -q "erased sectors"; then
         echo_err "ERASE FAILED — the board should be untouched."
@@ -270,10 +278,10 @@ erase_and_flash_both() {
     local write_out
     write_out=$(ssh "$PI_HOST" "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000 2>&1; \
                                 echo '---SPLIT---'; \
-                                sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000 2>&1" 2>&1)
+                                sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000 2>&1" 2>&1) || true
     local wrote
-    wrote=$(echo "$write_out" | grep -c "jolly good")
-    echo "$write_out" | grep -Ei "jolly good|error" | head -4
+    wrote=$(echo "$write_out" | grep -c "jolly good") || true
+    echo "$write_out" | grep -Ei "jolly good|error" | head -4 || true
 
     if [ "$wrote" -ne 2 ]; then
         echo_err "WRITE FAILED after a successful erase — THE BOARD IS NOW BLANK."
@@ -281,6 +289,18 @@ erase_and_flash_both() {
         echo_err "  ssh $PI_HOST \"sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000\""
         echo_err "  ssh $PI_HOST \"sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000\""
         echo_err "  ssh $PI_HOST \"sudo st-flash reset\""
+        echo_err ""
+        echo_err "If st-flash answers LIBUSB_ERROR_IO, flash over DFU instead. A"
+        echo_err "blank application region makes the OEM bootloader fall back to"
+        echo_err "USB DFU (it enumerates as 0483:df11), which is its own designed"
+        echo_err "recovery path and needs no ST-Link at all:"
+        echo_err "  ssh $PI_HOST \"sudo dfu-util -a 0 -s 0x08003000:leave -D /tmp/firmware.bin\""
+        echo_err ""
+        echo_err "That recovers the APPLICATION only. The DFU descriptor reads"
+        echo_err "  @Internal Flash /0x08000000/12*001Ka,116*001Kg"
+        echo_err "and the leading 12K is class 'a' - readable, not writable - so the"
+        echo_err "bootloader itself can only be rewritten through the ST-Link. DFU is"
+        echo_err "therefore a way out of a blank app, not out of a blank bootloader."
         exit 1
     fi
 
@@ -291,7 +311,7 @@ erase_and_flash_both() {
     echo_step "Verifying vector tables..."
     ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg -c 'transport select swd' \
         -f target/stm32f1x.cfg -c 'init' -c 'mdw 0x08000000 2' -c 'mdw 0x08003000 2' \
-        -c 'shutdown'" 2>&1 | grep -E "^0x0800"
+        -c 'shutdown'" 2>&1 | grep -E "^0x0800" || true
 }
 
 flash_bootloader() {
