@@ -236,10 +236,17 @@ erase_and_flash_both() {
     #    session.
     #
     #  * The erase must still be OpenOCD, because it needs `stm32f1x unlock 0`
-    #    first. The STOCK firmware re-enables flash write protection at
-    #    runtime, so st-flash alone answers "Flash memory is write protected"
-    #    whenever stock is running. Erasing under OpenOCD leaves nothing
-    #    running to re-protect, which is why the writes then succeed.
+    #    first. The STOCK firmware turns protection back on at runtime, so
+    #    st-flash alone answers "Flash memory is write protected" whenever
+    #    stock is running. Erasing under OpenOCD leaves nothing running to
+    #    re-protect, which is why the writes then succeed.
+    #
+    #    Measured 2026-09-05: what stock enables is flash READ protection.
+    #    FLASH_OBR (0x4002201C) reads 0x03FFFFFE - bit 1 RDPRT set - while
+    #    FLASH_WRPR is 0xFFFFFFFF, i.e. no sector write protection at all.
+    #    With RDP on, flash cannot be dumped AND any SWD attach double-faults
+    #    the running firmware and freezes the machine until a power cycle. So
+    #    never attach a debugger to a working stock unit to "just check".
     #
     # Every command substitution below ends in `|| true` and must keep doing so.
     # `set -e` is on, and a plain assignment `x=$(cmd)` propagates cmd's exit
