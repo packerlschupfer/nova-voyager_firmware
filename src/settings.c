@@ -290,7 +290,10 @@ static void set_defaults(settings_t* s) {
     s->motor.voltage_kp = 2000;      // Factory: 2000 (CRITICAL for motor start!)
     s->motor.voltage_ki = 9000;      // Factory: 9000 (CRITICAL for motor start!)
     s->motor.ir_gain = 28835;        // Factory: 28835
-    s->motor.ir_offset = 400;        // Factory: 400
+    s->motor.ir_offset = MOTOR_FACTORY_IR_OFFSET;  /* 82. Was a bare 400, which
+                                     * matched neither config.h nor Teknatool's
+                                     * service table - both say 82. Inert
+                                     * either way: motor_set_ir_comp is off. */
     s->motor.advance_max = 85;       // Factory: 85
     s->motor.pulse_max = 50;         // MCB "SU", range 10-100; 50 is what the
                                      // controller holds. The old 185 was read

@@ -229,6 +229,10 @@ static bool settings_read_by_key(const char* key, uint16_t* out) {
     else if (strcmp(key, "sensor.low_load_detect") == 0) *out = s->sensor.low_load_detect;
     else if (strcmp(key, "sensor.low_load_thresh") == 0) *out = s->sensor.low_load_thresh;
     else if (strcmp(key, "sensor.overload") == 0)        *out = s->sensor.overload_threshold;
+    /* DUMP has always printed these two, but GET/SET could not reach them, so
+     * the only way to change an IR value was the LCD menu. */
+    else if (strcmp(key, "motor.ir_gain") == 0)          *out = s->motor.ir_gain;
+    else if (strcmp(key, "motor.ir_offset") == 0)        *out = s->motor.ir_offset;
     else return false;
 
     return true;
@@ -268,6 +272,15 @@ void cmd_get(void) {
 // accept 0/1. Range-checking lives in the corresponding settings_set_*.
 /* Keys whose setter takes uint8_t need their own bound — the shared parse
  * guard can only reject above 65535. */
+/* int16_t fields need their own bound too - the shared parse guard only
+ * rejects above 65535, which would wrap into a negative gain. */
+static bool reject_i16(const char* key) {
+    uart_puts("Value too large for ");
+    uart_puts(key);
+    uart_puts(" (max 32767)\r\n");
+    return false;
+}
+
 static bool reject_u8(const char* key) {
     uart_puts("Value too large for ");
     uart_puts(key);
@@ -347,6 +360,10 @@ void cmd_set(void) {
         if (value > 255) { ok = reject_u8(key); } else settings_set_low_load_thresh((uint8_t)value);
     } else if (strcmp(key, "sensor.overload") == 0) {
         if (value > 255) { ok = reject_u8(key); } else settings_set_overload_threshold((uint8_t)value);
+    } else if (strcmp(key, "motor.ir_gain") == 0) {
+        if (value > 32767) { ok = reject_i16(key); } else settings_set_ir_gain((int16_t)value);
+    } else if (strcmp(key, "motor.ir_offset") == 0) {
+        if (value > 32767) { ok = reject_i16(key); } else settings_set_ir_offset((int16_t)value);
     } else {
         uart_puts("Unknown key: ");
         uart_puts(key);

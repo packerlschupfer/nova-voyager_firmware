@@ -391,8 +391,15 @@ static menu_item_t advanced_menu[] = {
      * pushing it to the MCB, with the row's own bound making it unrecoverable
      * from the menu. 32000 matches settings_clamp_loaded(); every other PID row
      * has a default well inside 9999, so this row was the outlier. */
-    {"IRGain",  MENU_INT,  &s_ir_gain, 0, 32000, 10, 0, NULL, 0},
-    {"IROffs",  MENU_INT,  &s_ir_offset, 0, 9999, 10, 0, NULL, 0},
+    /* The OEM's own bounds, read out of its service menu 2026-09-06. Unlike
+     * every other motor row these are hardcoded in the HMI rather than queried
+     * from the controller (0x08016852 and 0x08016880), so they are the only
+     * source for them. Our previous 0..32000 and 0..9999 were guesses: they let
+     * a gain below the OEM's floor of 6553 be entered, and an offset up to 9999
+     * against a real ceiling of 384 - which is how the stored ir_offset came to
+     * be 400, a value the manufacturer's own UI would have refused. */
+    {"IRGain",  MENU_INT,  &s_ir_gain, 6553, 32767, 200, 0, NULL, 0},
+    {"IROffs",  MENU_INT,  &s_ir_offset, 0, 384, 10, 0, NULL, 0},
     {"< Back",  MENU_BACK, NULL, 0, 0, 0, 0, NULL, 0},
 };
 static menu_item_t motor_menu[] = {

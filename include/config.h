@@ -346,9 +346,39 @@
 // arbitrary minimum - 1000 is both the register minimum and the value the
 // controller already held, so the clamp changed nothing.
 //
-// The manual documents defaults for V Kprop/V Kint (2000/9000) and T Threshold
-// (60 degC) and nothing else numeric, so DN, SR, SU, CL, I0 and I3 have no
-// documented factory figures anywhere.
+// Teknatool's service-mode article ("default motor parameter values") supplies
+// the figures the manual omits, and confirms two of ours:
+//
+//   Ir Gain   28835     matches our stored value exactly
+//   Ir Offset 82        matches MOTOR_FACTORY_IR_OFFSET; settings.c's 400 was
+//                       the outlier and is corrected
+//   TrqRmp    2000 ms   CONFLICTS: this controller holds SR = 1000
+//   SpdRmp    1000/s    matches DN = 1000
+//   CurLim    70%       matches the idle CL our own captures recorded
+//   PulseMax  185       CONFLICTS: SU accepts 10..100 and its menu handler
+//                       applies no scaling (verified at 0x080167b0, label
+//                       "Pulse Max" at 0x08016b88), so 185 cannot be this
+//                       parameter on this drive
+//   CurLim 20%, AdvMax 8%, SpdAdvMax 1000, SpdAvg 1000,
+//   Vd Low Lim 320v, Vd 360v, VddRef 190v
+//
+// Note that AdvMax, SpdAdvMax and the whole Vd family are UNIMPLEMENTED on this
+// controller (they answer 0/0/0 - see below), yet the article gives them values.
+// With the PulseMax range conflict and the TrqRmp mismatch that is three
+// independent signals that the article does not describe THIS controller. Two
+// readings fit equally well and cannot be told apart from a single machine:
+// a different drive VARIANT, or an earlier firmware GENERATION whose parameters
+// were later retuned (this MCB reports B1.7 via GV). Either way the article's
+// numbers are indicative here, not authoritative.
+//
+// SR stays at 1000 and SU at 50 - what this controller actually holds. Resist
+// promoting those to "the B1.7 factory defaults": the OEM service menu lets an
+// operator edit both, this machine is second-hand to us, and we have exactly
+// one sample. "What this controller holds" is all the evidence supports.
+//
+// An earlier revision of this block claimed the article CONFIRMED SR = 1000 as
+// the factory value. That came from a mis-transcribed table (1000 where it says
+// 2000) which was accepted without being verifiable from here. Retracted.
 
 // NOT IMPLEMENTED on this drive (MCB B1.7). These answer their queries but
 // report current=0 with min=0 and max=0, which is how an unimplemented
@@ -608,17 +638,55 @@
 
 // Motor factory default parameters (from Teknatool service manual)
 #define MOTOR_FACTORY_PULSE_MAX         185     // PulseMax factory default
-/* SUSPECT - do not trust these two. They were only ever sent to IU and OV,
- * neither of which is an IR register, so they have never reached I0/I3 and
- * were never validated against anything. The true I0/I3 read 0 on the machine.
- * 28835 is almost certainly an artefact of the old wrong mapping rather than a
- * gain. Nothing writes them now (motor_set_ir_comp is guarded off) and no
- * source documents an IR default: the Voyager manual's Adv. Motor Params table
- * (p.26) lists V Kprop/V Kint and T Threshold only. I0 and I3 expose no
- * minimum or maximum accessor either, so the MCB publishes no valid range to
- * check them against. */
-#define MOTOR_FACTORY_IR_GAIN           28835   // SUSPECT - see above
-#define MOTOR_FACTORY_IR_OFFSET         82      // IR Offset factory default
+/* PROVENANCE WARNING for the MOTOR_FACTORY_* constants below.
+ *
+ * Several were adopted in Jan 2026 by searching the OEM image for 16-bit
+ * immediates and treating a high occurrence count as proof of a factory
+ * default. That method carries no signal, measured 2026-09-06 against
+ * firmware_r2p06k_cg.bin:
+ *
+ *     CurLim      70  -> 149 hits        AdvMax      85  ->  11 hits
+ *     PulseMax   185  ->  20 hits        Voltage Ki 9000 ->   5 hits
+ *     IR Offset   82  ->  14 hits        Voltage Kp 2000 ->   2 hits
+ *     IR Gain  28835  ->   0 hits
+ *   controls: 83 -> 24 hits, 12345 -> 4 hits, 187 -> 2 hits
+ *
+ * An arbitrary 83 occurs MORE often than two of the "confirmed" values. The
+ * counts track Thumb instruction encoding, not data - 185 is 0x00B9 and 0xB9
+ * is a common opcode byte. Any of these numbers is matched or beaten by one
+ * nobody claims is a default.
+ *
+ * The zero for 28835 is the tell, and it is consistent rather than damning:
+ * the OEM has NO defaults-writing routine (see MCB_PARAM_TABLE), so it has no
+ * reason to embed factory values as immediates at all. Which means the whole
+ * search was looking for something that was never there.
+ *
+ * Treat every constant here as unverified unless it has an independent source -
+ * the manual (V Kprop/V Kint, T Threshold) or the controller's own readback.
+ */
+
+/* Ir Gain 28835 is GENUINE - it appears verbatim in Teknatool's own service-mode
+ * article ("default motor parameter values") for the Voyager DVR. An earlier
+ * note here called it suspect on the grounds that it had only ever been sent to
+ * the wrong register and could not be checked; that inference was wrong and is
+ * retracted. It was never applied because the write went to IU (Voltage Ki),
+ * not I0 - which is also why the machine's I0 reads 0.
+ *
+ * Ir Offset is NOT settled: the same table gives 40, we store 400. One of them
+ * is wrong or they are in different units, and I0/I3 expose no minimum or
+ * maximum accessor, so the MCB publishes no range to arbitrate. Do not "fix"
+ * either number by picking the one you like.
+ *
+ * Nothing writes these - motor_set_ir_comp() is guarded off. Enabling it would
+ * newly apply IR compensation to a machine that has run without it for this
+ * firmware's whole life, which is a tuning decision, not a bug fix. */
+#define MOTOR_FACTORY_IR_GAIN           28835   // Teknatool service doc
+/* 82 agrees with Teknatool's service-mode table. settings.c set_defaults() held
+ * 400, which matched nothing and is now corrected to this constant. Nobody could
+ * have caught the discrepancy earlier: the value was only ever written to OV,
+ * which is not an IR register, and the real I3 reads 0. Still not APPLIED -
+ * motor_set_ir_comp() is guarded off. */
+#define MOTOR_FACTORY_IR_OFFSET         82      // Teknatool service doc
 #define MOTOR_FACTORY_ADV_MAX           85      // AdvMax factory default
 #define MOTOR_FACTORY_CUR_LIM           70      // Current Limit factory default (%)
 #define MOTOR_FACTORY_SPD_RMP           1000    // Speed Ramp factory default

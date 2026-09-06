@@ -452,18 +452,26 @@ void motor_set_ir_comp(int16_t ir_gain, int16_t ir_offset) {
      * out of range - so the true I0/I3 have sat at 0 for the life of this
      * firmware, measured on the machine 2026-09-06.
      *
-     * DELIBERATELY NOT SENT, for the same reason as the voltage PID above:
-     * enabling it would apply IR compensation to a machine that has always run
-     * without it, as a side effect of fixing the addressing. That is a tuning
-     * change and needs its own validation under load. The console commands I0
-     * and I3 read the live values.
+     * ENABLED 2026-09-06 by the machine's owner, at the machine. It had been
+     * guarded off since the addressing was corrected, because switching it on
+     * applies IR compensation for the first time to a unit that has run without
+     * it - a tuning change rather than a bug fix.
      *
-     * To enable: delete the guard and validate. */
-    (void)ir_gain; (void)ir_offset;
-    if (0) {
-        motor_send_command(CMD_SET_IR_GAIN, ir_gain);
-        motor_send_command(CMD_SET_IR_OFFSET, ir_offset);
-    }
+     * Values: Ir Gain 28835 and Ir Offset 82, both from Teknatool's service-mode
+     * table, and both inside the OEM menu's own hardcoded bounds (gain
+     * 6553..32767, offset 0..384 - see menu.c). Neither register publishes a
+     * min/max over the wire, so motor_send_param_checked() cannot be used here.
+     *
+     * MEASURED: this controller IGNORES both writes. I0 and I3 answer queries
+     * with 0 and stay at 0 afterwards, with 28835 and with 100. The frame is
+     * not the problem - the OEM's own setters use the identical commands 0x4930
+     * and 0x4933 through the same primitive (0x0801ad8e and 0x0801adaa). So IR
+     * compensation appears not to be implemented on this drive, which is how
+     * the Vd family and AdvMax behave too. The write is left in because it is
+     * correct and would work on a drive that implements it. */
+    motor_send_command(CMD_SET_IR_GAIN, ir_gain);
+    delay_ms(5);
+    motor_send_command(CMD_SET_IR_OFFSET, ir_offset);
 }
 
 // motor_set_pulse_max, motor_set_advance_max, motor_restore_mcb_defaults removed
@@ -979,7 +987,7 @@ void motor_sync_settings(void) {
     motor_set_ir_comp(s->motor.ir_gain, s->motor.ir_offset);
     delay_ms(5);  // Match original firmware (5ms delays)
     HEARTBEAT_UPDATE_MOTOR();
-    uart_puts("  IR comp NOT sent (I0/I3 guarded off - see motor_set_ir_comp)\r\n");
+    uart_puts("  IR comp sent (I0/I3 - ignored on this drive)\r\n");
 
     // Send voltage PID parameters (CRITICAL: must be non-zero for motor to start!)
     // Safety: use factory defaults if stored values are zero
