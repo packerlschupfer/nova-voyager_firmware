@@ -465,10 +465,20 @@ void motor_set_ir_comp(int16_t ir_gain, int16_t ir_offset) {
      * MEASURED: this controller IGNORES both writes. I0 and I3 answer queries
      * with 0 and stay at 0 afterwards, with 28835 and with 100. The frame is
      * not the problem - the OEM's own setters use the identical commands 0x4930
-     * and 0x4933 through the same primitive (0x0801ad8e and 0x0801adaa). So IR
-     * compensation appears not to be implemented on this drive, which is how
-     * the Vd family and AdvMax behave too. The write is left in because it is
-     * correct and would work on a drive that implements it. */
+     * and 0x4933 through the same primitive (0x0801ad8e and 0x0801adaa).
+     *
+     * Nor is there a step we are missing. Every one of the 49 calls to the write
+     * primitive 0x0801b110 carries an IMMEDIATE command - none computes it at
+     * runtime - so no dynamic or unlock-then-write path can exist that an
+     * immediate-only search would have missed. The setter wrappers have exactly
+     * one caller each, the service-menu rows at 0x0801686e and 0x08016898, and
+     * the call that follows each write (0x0801ad6a / 0x0801ad76) is a readback,
+     * not a commit.
+     *
+     * So IR compensation is not implemented on this drive - the same behaviour
+     * as the Vd family and AdvMax: queries answered with 0, writes ignored. The
+     * write is left in because it is correct and would work on a drive that has
+     * it. */
     motor_send_command(CMD_SET_IR_GAIN, ir_gain);
     delay_ms(5);
     motor_send_command(CMD_SET_IR_OFFSET, ir_offset);
