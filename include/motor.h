@@ -318,6 +318,15 @@ void motor_set_vibration_sensitivity(uint8_t level);
  * @brief Sync all motor settings from settings module to MCB
  * Sends PID, ramps, current limit, IR comp, etc.
  */
+/**
+ * @brief Push the speed PI coefficients (SP/SI) to the MCB
+ *
+ * The MCB derives Kprop/Kint from the speed profile and does not persist them,
+ * so this must run after any profile change. motor_set_profile() calls it.
+ * @return true if both writes were accepted or legitimately skipped
+ */
+bool motor_apply_speed_pi(void);
+
 void motor_sync_settings(void);
 
 /**

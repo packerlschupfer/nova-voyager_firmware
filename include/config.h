@@ -330,6 +330,23 @@
 #define MCB_RANGE_PULSE_MAX_MIN       10
 #define MCB_RANGE_PULSE_MAX_MAX      100
 
+// NOT IMPLEMENTED on this drive (MCB B1.7). These answer their queries but
+// report current=0 with min=0 and max=0, which is how an unimplemented
+// parameter presents itself - a real one always has a non-degenerate range:
+//
+//   Adv Max        SA / LA / HA     (settings.motor.advance_max writes here,
+//                                    and the write is a no-op - MSYNC sends it
+//                                    and SA still reads 0 afterwards)
+//   Spd Adv Max    NC / SC / TC
+//   Vd Low Limit   UW / WL / WH
+//   Vd Ref ON      BN / LN / HN
+//   Vd Ref OFF     BF / LF / HF
+//
+// The manual (p.22) lists "Vd DC Bus - motor phase DC bus voltage, 360v", so
+// the Vd family belongs to a drive variant this machine does not have.
+// advance_max is therefore a dead setting here, like the display settings -
+// harmless, but do not spend time tuning it.
+
 // Bounds accessors: minimum (L*) and maximum (H*) for each parameter above.
 // Parameterless query = read; these are read-only in our firmware.
 #define CMD_MIN_POWER_LIMIT  0x4C4C     // "LL" - Output Power Limit minimum

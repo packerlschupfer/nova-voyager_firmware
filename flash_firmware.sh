@@ -59,6 +59,15 @@ ORIGINAL_BOOTLOADER="$ASSETS_DIR/firmware/bootloader_gd32_backup.bin"
 # Checking costs about a second. Do it every flash, so a corrupted bootloader is
 # reported as itself rather than diagnosed from symptoms later.
 # ---------------------------------------------------------------------------
+# The bootloader integrity check compares the chip against the bootloader that
+# was ACTUALLY FLASHED ($CUSTOM_BOOTLOADER, selected by $BOOTLOADER_ENV), not a
+# fixed path. It used to default to the nova_bootloader_pad build while
+# "custom" and "quick" flash nova_bootloader_120 - two different binaries - so
+# every flash ended in a full-width "*** LIVE CODE CORRUPTED ***" report and a
+# recovery instruction, on a board that was completely fine. Measured
+# 2026-09-06: the chip matches nova_bootloader_120 byte for byte, 0 differences
+# across all 792 bytes. Override BOOTLOADER_BIN to check against something else.
+#
 # Sacrificial canary pad in the diagnostic bootloader (env nova_bootloader_pad):
 # file offsets 0x130..0x49F, 880 bytes, filled 0xA5. Default_Handler was moved
 # from 0x08000488 to 0x080007F8, so the historically-damaged addresses now hold
@@ -70,7 +79,7 @@ PAD_LO=$((0x130))
 PAD_HI=$((0x49F))
 
 verify_bootloader_intact() {
-    local img="${BOOTLOADER_BIN:-/home/mrnice/git/github/nova-voyager_bootloader/.pio/build/nova_bootloader_pad/firmware.bin}"
+    local img="${BOOTLOADER_BIN:-$CUSTOM_BOOTLOADER}"
     if [ ! -f "$img" ]; then
         echo "  (bootloader image not found - skipping integrity check)"
         return 0
@@ -125,7 +134,7 @@ verify_bootloader_intact() {
 
 # Rewrite the bootloader from its reference image and verify halted.
 restore_bootloader() {
-    local img="${BOOTLOADER_BIN:-/home/mrnice/git/github/nova-voyager_bootloader/.pio/build/nova_bootloader_pad/firmware.bin}"
+    local img="${BOOTLOADER_BIN:-$CUSTOM_BOOTLOADER}"
     local size
     size=$(stat -c%s "$img")
     echo_step "Restoring bootloader (${size} bytes)..."

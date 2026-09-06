@@ -782,6 +782,12 @@ void motor_set_profile(uint8_t profile) {
             motor_send_command(CMD_PROFILE_S7, 750);
             break;
     }
+
+    /* The profile determines Kprop/Kint on the controller (manual p.22), so
+     * selecting one discards the gains we last sent. Re-apply them here rather
+     * than leaving the machine on profile-derived values until the next MSYNC. */
+    delay_ms(5);
+    motor_apply_speed_pi();
 }
 
 void motor_set_power_output(uint8_t level) {
@@ -915,6 +921,40 @@ void motor_set_vibration_sensitivity(uint8_t level) {
     motor_send_command(CMD_VS, vs_enable);
 }
 
+/* Push the speed PI coefficients to the MCB.
+ *
+ * Separate from motor_sync_settings() because the MCB does not keep them. The
+ * Voyager manual (p.22) states Kprop/Kint "cannot be saved into the EEPROM
+ * memory because it is based on the speed profile parameter" - the controller
+ * derives them from the profile, so selecting a profile discards whatever we
+ * last sent. The profile is applied on its own path (events.c ->
+ * CMD_MOTOR_APPLY_SETTINGS -> motor_set_profile) with no ordering guarantee
+ * against sync, and sync only runs from MSYNC/MSAVE, so before 2026-09-06 a
+ * profile change silently reverted the gains until someone re-ran MSYNC.
+ * motor_set_profile() now calls this itself.
+ *
+ * Settings are percent, the MCB is per-mille - hence MCB_SPEED_PI_SCALE.
+ *
+ * @return true if both writes were accepted (or legitimately skipped). */
+bool motor_apply_speed_pi(void) {
+    const settings_t* s = settings_get();
+    if (s == NULL) return false;
+
+    bool ok = motor_send_param_checked(CMD_SET_KP,
+                                       (int32_t)s->motor.speed_kprop * MCB_SPEED_PI_SCALE,
+                                       MCB_RANGE_SPEED_PI_MIN, MCB_RANGE_SPEED_PI_MAX,
+                                       "speed_kprop");
+    delay_ms(5);
+    if (!motor_send_param_checked(CMD_SET_KI,
+                                  (int32_t)s->motor.speed_kint * MCB_SPEED_PI_SCALE,
+                                  MCB_RANGE_SPEED_PI_MIN, MCB_RANGE_SPEED_PI_MAX,
+                                  "speed_kint")) ok = false;
+    delay_ms(5);
+    HEARTBEAT_UPDATE_MOTOR();
+    uart_puts("  Speed PI set (SP/SI)\r\n");
+    return ok;
+}
+
 void motor_sync_settings(void) {
     extern void uart_puts(const char* s);
     extern void print_num(int32_t n);
@@ -929,7 +969,7 @@ void motor_sync_settings(void) {
     motor_set_ir_comp(s->motor.ir_gain, s->motor.ir_offset);
     delay_ms(5);  // Match original firmware (5ms delays)
     HEARTBEAT_UPDATE_MOTOR();
-    uart_puts("  IR comp set\r\n");
+    uart_puts("  IR comp NOT sent (I0/I3 guarded off - see motor_set_ir_comp)\r\n");
 
     // Send voltage PID parameters (CRITICAL: must be non-zero for motor to start!)
     // Safety: use factory defaults if stored values are zero
@@ -962,23 +1002,7 @@ void motor_sync_settings(void) {
     HEARTBEAT_UPDATE_MOTOR();
     uart_puts("  Voltage PID set (PU/IU)\r\n");
 
-    /* Speed PI. These now address SP/SI - "KP"/"KI" are not MCB registers and
-     * the writes went nowhere. Settings are percent, the MCB is per-mille, so
-     * scale on the way out: 100 -> 1000 and 50 -> 500, which is exactly what
-     * the controller already holds, so this is a no-op against a machine at
-     * defaults rather than a silent retune. */
-    if (!motor_send_param_checked(CMD_SET_KP,
-                                  (int32_t)s->motor.speed_kprop * MCB_SPEED_PI_SCALE,
-                                  MCB_RANGE_SPEED_PI_MIN, MCB_RANGE_SPEED_PI_MAX,
-                                  "speed_kprop")) sync_failures++;
-    delay_ms(5);
-    if (!motor_send_param_checked(CMD_SET_KI,
-                                  (int32_t)s->motor.speed_kint * MCB_SPEED_PI_SCALE,
-                                  MCB_RANGE_SPEED_PI_MIN, MCB_RANGE_SPEED_PI_MAX,
-                                  "speed_kint")) sync_failures++;
-    delay_ms(5);
-    HEARTBEAT_UPDATE_MOTOR();  // Prevent watchdog during long init
-    uart_puts("  Speed PI set (SP/SI)\r\n");
+    if (!motor_apply_speed_pi()) sync_failures++;
 
     // Send advance and pulse max (safety: use factory defaults if zero)
     uint16_t adv_max = s->motor.advance_max ? s->motor.advance_max : MOTOR_FACTORY_ADV_MAX;
