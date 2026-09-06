@@ -378,8 +378,12 @@ static menu_item_t advanced_menu[] = {
      * values ten times larger than the field actually means. */
     {"SpdKp",   MENU_INT,  &s_speed_kp, 1, 999, 5, 0, NULL, 0},
     {"SpdKi",   MENU_INT,  &s_speed_ki, 1, 999, 5, 0, NULL, 0},
-    {"VltKp",   MENU_INT,  &s_voltage_kp, 0, 9999, 50, 0, NULL, 0},
-    {"VltKi",   MENU_INT,  &s_voltage_ki, 0, 9999, 50, 0, NULL, 0},
+    /* MCB range is 100..9999 for both (MBOUNDS). A menu minimum of 0 let the
+     * user store 1..99, which sync then skipped - leaving the voltage PID
+     * unsent entirely. 0 is still honoured from EEPROM as "use the factory
+     * default"; it just cannot be selected here. */
+    {"VltKp",   MENU_INT,  &s_voltage_kp, 100, 9999, 50, 0, NULL, 0},
+    {"VltKi",   MENU_INT,  &s_voltage_ki, 100, 9999, 50, 0, NULL, 0},
     /* REVIEW FIX (HIGH): max was 9999 while the factory default is 28835
      * (MOTOR_FACTORY_IR_GAIN). Entering edit seeded 28835, and the first
      * encoder detent applied the step and then clamped to the row max —
@@ -407,7 +411,9 @@ static menu_item_t motor_menu[] = {
 static menu_item_t power_menu[] = {
     {"Output",  MENU_ENUM, &s_power_output, 0, 2, 1, 3, power_output_opts, 0},
     {"DCBus",   MENU_INT,  &s_dc_bus, 1000, 5000, 100, 0, NULL, 0},
-    {"Temp",    MENU_INT,  &s_temp_thresh, 40, 100, 5, 0, NULL, 0},
+    /* TR accepts 4..75 degC; 40..100 was the range of the under-voltage
+     * register this row used to be misdirected to. */
+    {"Temp",    MENU_INT,  &s_temp_thresh, 4, 75, 5, 0, NULL, 0},
     {"SlfSrt",  MENU_ENUM, &s_self_start, 0, 1, 1, 2, onoff_opts, 0},
     {"Pilot",   MENU_ENUM, &s_pilot_hole, 0, 1, 1, 2, onoff_opts, 0},
     {"SpdHld",  MENU_ENUM, &s_spindle_hold, 0, 1, 1, 2, onoff_opts, 0},

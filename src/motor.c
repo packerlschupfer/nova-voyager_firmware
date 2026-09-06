@@ -401,23 +401,24 @@ uint16_t motor_get_vibration(void) {
     return motor_status.vibration;
 }
 
-/* Send a parameter, clamped to the range the MCB reports for that register.
+/* Send a parameter, or SKIP it if it falls outside the range the MCB reports
+ * for that register.
  *
  * WHY: until 2026-09-06 several parameters were addressed to the wrong
  * register - torque_ramp went to TR, which is the MCB's THERMAL THRESHOLD, and
  * pulse_max/ir_gain went to the voltage PID registers. The mapping is fixed
- * now, but the stored "factory defaults" were themselves observed through that
- * wrong mapping (pulse_max=185 against a register whose maximum is 100,
- * torque_ramp=75 against one whose minimum is 1000), so a settings value can
- * still be nonsense for the register it now reaches.
+ * now, but stored values were saved against those wrong registers, so a
+ * settings value can still be nonsense for the register it now reaches.
  *
- * Clamping makes that harmless: an out-of-range setting becomes a legal
- * extreme instead of a rejected write or, worse, a plausible value in the
- * wrong register. It also announces itself, so a mis-scaled setting shows up
- * in the sync log rather than silently doing nothing.
+ * Skipping, not clamping. Clamping an untrusted value to a legal extreme is
+ * its own silent change - pulse_max=185 would clamp to 100 and move the
+ * controller off the 50 it actually runs at. An out-of-range value means the
+ * setting is stale, so the honest response is to leave the MCB alone and say
+ * so in the sync log. Returns true in that case: nothing failed, and the
+ * controller still holds a valid value.
  *
  * Ranges are the cached MCB_RANGE_* constants, not live queries - a query that
- * times out during motor init must not be able to degrade into an unclamped
+ * times out during motor init must not be able to degrade into an unchecked
  * write. MBOUNDS re-verifies them against the live MCB on demand. */
 static bool motor_send_param_checked(uint16_t cmd, int32_t value,
                                      int32_t lo, int32_t hi, const char* name) {
@@ -751,7 +752,7 @@ void motor_set_torque_ramp(uint16_t ramp_rate) {
     /* CMD_SET_TRQ_RMP was "TR" until 2026-09-06 - the MCB's thermal threshold,
      * range 4..75. Every torque-ramp change therefore moved the motor's
      * temperature trip point and never touched the torque ramp at all. It now
-     * addresses SR, the real Torque Ramp, clamped to the MCB's own range. */
+     * addresses SR, the real Torque Ramp, checked against the MCB's range. */
     motor_send_param_checked(CMD_SET_TRQ_RMP, (int32_t)ramp_rate,
                              MCB_RANGE_TORQUE_RAMP_MIN, MCB_RANGE_TORQUE_RAMP_MAX,
                              "torque_ramp");
@@ -871,13 +872,22 @@ bool motor_set_power_level(motor_power_t level) {
 }
 
 void motor_set_thermal_threshold(uint8_t threshold_c) {
-    // Set temperature threshold for current reduction
-    // MCB will de-rate current when heatsink exceeds this temperature
-    if (threshold_c < 40) threshold_c = 40;    // Min 40°C
-    if (threshold_c > 100) threshold_c = 100;  // Max 100°C
+    /* Temperature threshold for current reduction - the MCB de-rates current
+     * above this heatsink temperature.
+     *
+     * This wrote CMD_TH until 2026-09-06. TH is the Under Volt Stop MAXIMUM,
+     * a protection register, so editing the temperature threshold pushed a
+     * 40..100 value into the under-voltage limit and never touched the
+     * temperature at all. The real register is TR, range 4..75 (MBOUNDS), and
+     * the manual's default is 60 degC.
+     *
+     * The old 40..100 bound was for the wrong register too: 100 exceeds what
+     * TR accepts, so it is now the MCB's own range. */
 
     // Send TH command to motor controller
-    motor_send_command(CMD_TH, threshold_c);
+    motor_send_param_checked(CMD_TEMP_THRESHOLD, (int32_t)threshold_c,
+                             MCB_RANGE_TEMP_THRESH_MIN, MCB_RANGE_TEMP_THRESH_MAX,
+                             "temp_threshold");
 }
 
 void motor_set_vibration_sensitivity(uint8_t level) {
@@ -1013,16 +1023,24 @@ void motor_sync_settings(void) {
      * 2026-09-06 the torque-ramp setting was written to this register. Restore
      * the documented value so thermal current reduction engages when the
      * manufacturer intended rather than 15 degC late. */
-    if (!motor_send_param_checked(0x5452 /* TR */, MOTOR_FACTORY_TEMP_THRESHOLD,
-                                  MCB_RANGE_TEMP_THRESH_MIN, MCB_RANGE_TEMP_THRESH_MAX,
-                                  "temp_threshold")) sync_failures++;
+    {
+        /* Honour the stored setting; fall back to the manual's 60 degC when it
+         * is unset. Hard-writing 60 here would have pinned the threshold and
+         * made the Power > Temp menu row cosmetic. */
+        uint8_t tt = s->power.temp_threshold ? s->power.temp_threshold
+                                             : MOTOR_FACTORY_TEMP_THRESHOLD;
+        if (!motor_send_param_checked(CMD_TEMP_THRESHOLD, (int32_t)tt,
+                                      MCB_RANGE_TEMP_THRESH_MIN, MCB_RANGE_TEMP_THRESH_MAX,
+                                      "temp_threshold")) sync_failures++;
+    }
     delay_ms(5);
 
     /* Pulse Max is SU (10..100). This used to go to PU - the voltage Kp
      * register, minimum 100 - so pulse_max=185 was written to the wrong place
      * and the real Pulse Max was never set. The stored default of 185 was
      * itself read back through that wrong mapping, so it is out of range here
-     * and will clamp; the sync log now says so. */
+     * and will be SKIPPED, leaving the controller's own value alone; the sync
+     * log says so. */
     if (!motor_send_param_checked(CMD_SET_PULSE_MAX, (int32_t)s->motor.pulse_max,
                                   MCB_RANGE_PULSE_MAX_MIN, MCB_RANGE_PULSE_MAX_MAX,
                                   "pulse_max")) sync_failures++;
@@ -1031,23 +1049,25 @@ void motor_sync_settings(void) {
     uart_puts("  Adv/Pulse max set\r\n");
 
     // Send speed ramp rate to MCB (controls soft start/stop)
-    if (s->motor.speed_ramp >= 50 && s->motor.speed_ramp <= 2000) {
+    if (s->motor.speed_ramp >= MCB_RANGE_SPEED_RAMP_MIN && s->motor.speed_ramp <= MCB_RANGE_SPEED_RAMP_MAX) {
         motor_set_speed_ramp(s->motor.speed_ramp);
         delay_ms(5);  // Match original firmware (5ms delays)
     }
 
     // Send torque ramp rate to MCB
-    if (s->motor.torque_ramp >= 50 && s->motor.torque_ramp <= 2000) {
+    if (s->motor.torque_ramp >= MCB_RANGE_TORQUE_RAMP_MIN && s->motor.torque_ramp <= MCB_RANGE_TORQUE_RAMP_MAX) {
         motor_set_torque_ramp(s->motor.torque_ramp);
         delay_ms(5);  // Match original firmware (5ms delays)
     }
     HEARTBEAT_UPDATE_MOTOR();
 
     // Send overload threshold (LD register)
-    if (s->sensor.overload_threshold >= 10 && s->sensor.overload_threshold <= 100) {
-        if (!motor_send_command(CMD_LD, s->sensor.overload_threshold)) sync_failures++;
-        delay_ms(5);
-    }
+    /* overload_threshold is NOT sent to the MCB any more. It used to go to
+     * CMD_LD, which the recovered parameter table shows is the Speed Ramp
+     * MINIMUM - so setting Sensor > Overload to 100 raised that minimum to 100
+     * and then rejected our own speed-ramp writes below it. No register in the
+     * MCB's table corresponds to an overload trip point, so the setting stays
+     * stored and firmware-side only. See MCB_PARAM_TABLE in config.h. */
     HEARTBEAT_UPDATE_MOTOR();
 
     // NOTE: Brake (BR) command DISABLED - causes motor overheating

@@ -325,10 +325,30 @@
 #define MCB_RANGE_TORQUE_RAMP_MAX  10000
 #define MCB_RANGE_SPEED_PI_MIN        10
 #define MCB_RANGE_SPEED_PI_MAX      9999
+#define CMD_TEMP_THRESHOLD  0x5452      // "TR" - Temp Threshold (4..75 degC)
 #define MCB_RANGE_TEMP_THRESH_MIN      4
 #define MCB_RANGE_TEMP_THRESH_MAX     75
 #define MCB_RANGE_PULSE_MAX_MIN       10
 #define MCB_RANGE_PULSE_MAX_MAX      100
+
+// FACTORY VALUES. The OEM firmware has no defaults-writing routine: all 89
+// call sites of the setter primitive 0x0801b110 write values computed from menu
+// edits, the only immediates being CL = 20/50/70/100 (power output, which
+// matches our own mapping) and FD = 0/1/2. "Factory Reset" resets the HMI's
+// EEPROM; the MCB keeps its parameters in its own. So registers this firmware
+// has never written still hold what the machine has always run with:
+//
+//   SR Torque Ramp  1000   (we only ever wrote TR)
+//   SU Pulse Max      50   (we only ever wrote PU)
+//   I0/I3 IR         0/0   (we only ever wrote IU/OV)
+//
+// Torque Ramp sitting at 1000 is therefore NOT the migration clamp picking an
+// arbitrary minimum - 1000 is both the register minimum and the value the
+// controller already held, so the clamp changed nothing.
+//
+// The manual documents defaults for V Kprop/V Kint (2000/9000) and T Threshold
+// (60 degC) and nothing else numeric, so DN, SR, SU, CL, I0 and I3 have no
+// documented factory figures anywhere.
 
 // NOT IMPLEMENTED on this drive (MCB B1.7). These answer their queries but
 // report current=0 with min=0 and max=0, which is how an unimplemented
@@ -588,7 +608,16 @@
 
 // Motor factory default parameters (from Teknatool service manual)
 #define MOTOR_FACTORY_PULSE_MAX         185     // PulseMax factory default
-#define MOTOR_FACTORY_IR_GAIN           28835   // IR Gain factory default
+/* SUSPECT - do not trust these two. They were only ever sent to IU and OV,
+ * neither of which is an IR register, so they have never reached I0/I3 and
+ * were never validated against anything. The true I0/I3 read 0 on the machine.
+ * 28835 is almost certainly an artefact of the old wrong mapping rather than a
+ * gain. Nothing writes them now (motor_set_ir_comp is guarded off) and no
+ * source documents an IR default: the Voyager manual's Adv. Motor Params table
+ * (p.26) lists V Kprop/V Kint and T Threshold only. I0 and I3 expose no
+ * minimum or maximum accessor either, so the MCB publishes no valid range to
+ * check them against. */
+#define MOTOR_FACTORY_IR_GAIN           28835   // SUSPECT - see above
 #define MOTOR_FACTORY_IR_OFFSET         82      // IR Offset factory default
 #define MOTOR_FACTORY_ADV_MAX           85      // AdvMax factory default
 #define MOTOR_FACTORY_CUR_LIM           70      // Current Limit factory default (%)

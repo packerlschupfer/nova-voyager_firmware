@@ -39,8 +39,13 @@ static void mutate_all(settings_t* s) {
     s->motor.voltage_ki   =   888;
     s->motor.ir_gain      = 28835;
     s->motor.ir_offset    =  1357;
-    s->motor.speed_ramp   =  1900;
-    s->motor.torque_ramp  =   650;
+    /* Both must be legal for the MCB, or the load-time clamp rewrites them and
+     * the round-trip assertion fails for the wrong reason. Ranges came from the
+     * controller itself on 2026-09-06 (console: MBOUNDS): Speed Ramp 50..1000,
+     * Torque Ramp 1000..10000. The old 1900 / 650 predate that and were legal
+     * only against bounds nobody had checked against the hardware. */
+    s->motor.speed_ramp   =   800;
+    s->motor.torque_ramp  =  4000;
     s->motor.current_limit =   93;
 
     s->sensor.overload_threshold    = 77;
@@ -145,7 +150,7 @@ static void test_out_of_range_blob_is_clamped_not_applied(void) {
      * passes validation exactly as a compensating-error corruption would. */
     blob.spike_thresh    = 0;      /* below the 20 floor: emergency-stop value */
     blob.stall_time_ms20 = 255;    /* 255*20 = 5100, above the 5000 ceiling */
-    blob.temp_threshold  = 5;      /* below the 40 floor */
+    blob.temp_threshold  = 1;      /* below the 4 floor (TR accepts 4..75) */
     blob.depth_offset    = -9000;  /* not a possible ADC reading */
     /* power_output can no longer BE out of range: v2 stores it in two bits of
      * tap_misc, so 0-3 is all that fits. Set the maximum and check it survives
@@ -159,7 +164,7 @@ static void test_out_of_range_blob_is_clamped_not_applied(void) {
 
     TEST_ASSERT_EQUAL_UINT16(20,   dst.sensor.spike_thresh);
     TEST_ASSERT_EQUAL_UINT16(5000, dst.sensor.stall_time_ms);
-    TEST_ASSERT_EQUAL_UINT8(40,    dst.power.temp_threshold);
+    TEST_ASSERT_EQUAL_UINT8(4,     dst.power.temp_threshold);
     TEST_ASSERT_EQUAL_INT16(0,     dst.depth.offset);
     TEST_ASSERT_EQUAL_UINT8(3,     dst.power.power_output);
     TEST_ASSERT_EQUAL(UNITS_METRIC, dst.display.units);

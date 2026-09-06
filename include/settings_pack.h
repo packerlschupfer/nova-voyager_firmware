@@ -238,8 +238,17 @@ static inline void settings_clamp_loaded(settings_t* s) {
     SETTINGS_CLAMP(s->motor.ir_gain,     0, 32000);
     SETTINGS_CLAMP(s->motor.ir_offset,   0, 32000);
 
-    SETTINGS_CLAMP(s->motor.speed_ramp,   50, 2000);
-    SETTINGS_CLAMP(s->motor.torque_ramp,  50, 2000);
+    /* The MCB's own ranges (MBOUNDS, 2026-09-06), not invented bounds. These
+     * were 50..2000 for both, which matched neither register: the controller
+     * accepts 50..1000 for Speed Ramp and 1000..10000 for Torque Ramp.
+     *
+     * Clamping on load is also the migration. A pre-2026-09-06 EEPROM holds
+     * torque_ramp=75 - which was really a temperature, written to the wrong
+     * register - and 75 clamps up to 1000 here, so provisioned machines get a
+     * legal value without needing a SETTINGS_VERSION bump that would discard
+     * everything else the user had set. */
+    SETTINGS_CLAMP(s->motor.speed_ramp,   MCB_RANGE_SPEED_RAMP_MIN,  MCB_RANGE_SPEED_RAMP_MAX);
+    SETTINGS_CLAMP(s->motor.torque_ramp,  MCB_RANGE_TORQUE_RAMP_MIN, MCB_RANGE_TORQUE_RAMP_MAX);
     SETTINGS_CLAMP(s->motor.current_limit, 0, 500);
 
     SETTINGS_CLAMP(s->sensor.overload_threshold,   10, 100);
@@ -256,7 +265,9 @@ static inline void settings_clamp_loaded(settings_t* s) {
     SETTINGS_CLAMP(s->sensor.stall_time_ms,       100, 5000);
 
     SETTINGS_CLAMP(s->power.power_output,    0, 3);
-    SETTINGS_CLAMP(s->power.temp_threshold, 40, 100);
+    /* TR accepts 4..75 (MBOUNDS). The old 40..100 was the range of CMD_TH,
+     * the register this setting used to be misdirected to. */
+    SETTINGS_CLAMP(s->power.temp_threshold, MCB_RANGE_TEMP_THRESH_MIN, MCB_RANGE_TEMP_THRESH_MAX);
 
     if ((int)s->depth.mode   > (int)DEPTH_MODE_PRECISION)  s->depth.mode   = DEPTH_MODE_OFF;
     if ((int)s->depth.action > (int)DEPTH_ACTION_STOP_REV_TOP) s->depth.action = DEPTH_ACTION_STOP;

@@ -1113,10 +1113,31 @@ static void mbounds_print_field(int32_t v) {
 }
 
 void cmd_mbounds(void) {
+    /* Claim the scan, exactly like SNIFF and REGSCAN. 48 queries at up to
+     * MOTOR_RESPONSE_TIMEOUT_MS each is ~12 s of UART in the worst case; without
+     * a claim every one of those adds latency to task_motor's 2 Hz poll and
+     * pushes consecutive_comm_failures toward the COMM FAULT cutoff. The claim
+     * also refuses the command while the spindle is turning. */
+    const motor_scan_result_t claim = motor_scan_try_claim();
+    if (claim != MOTOR_SCAN_CLAIMED) {
+        uart_puts("MBOUNDS refused: ");
+        uart_puts(motor_scan_refusal(claim));
+        uart_puts("\r\n");
+        return;
+    }
+
     uart_puts("MCB parameter bounds (read-only queries)\r\n");
+    uart_puts("Press ESC/Ctrl-C or trigger an event to abort\r\n");
     uart_puts("parameter           cmd  cur\tmin\tmax\r\n");
 
-    for (unsigned i = 0; i < sizeof(MCB_BOUNDS) / sizeof(MCB_BOUNDS[0]); i++) {
+    /* console_pump() and not a blind IWDG feed: the console runs on task_main,
+     * which is the ONLY thing that refreshes the 5 s watchdog, and this loop
+     * blocks it. HEARTBEAT_UPDATE_MOTOR() here would be worse than useless - it
+     * feeds the MOTOR task's heartbeat from the main task, which cannot refresh
+     * the watchdog and would mask a genuine motor-task stall while we run. */
+    bool aborted = false;
+
+    for (unsigned i = 0; i < sizeof(MCB_BOUNDS) / sizeof(MCB_BOUNDS[0]) && !aborted; i++) {
         const mcb_param_bounds_t* p = &MCB_BOUNDS[i];
 
         uart_puts(p->name);
@@ -1139,7 +1160,13 @@ void cmd_mbounds(void) {
         }
         uart_puts("\r\n");
 
-        HEARTBEAT_UPDATE_MOTOR();
+        aborted = console_pump();
+    }
+
+    motor_scan_release();
+    if (aborted) {
+        uart_puts("aborted\r\n");
+        return;
     }
     uart_puts("Names come from the OEM service menu; see MCB_PARAM_TABLE in config.h.\r\n");
 }
@@ -1328,10 +1355,34 @@ void cmd_i2calt(void) {
  * one-count margin on a floating bus would do as motor noise rises.
  */
 void cmd_vibraw(void) {
+    /* Optional slow factor: "VIBRAW 20" runs the bus 20x slower. The OEM's own
+     * bit-bang is far slower than ours - its start/stop sequence carries ~10ms
+     * delays - so if a floating-bus glitch were timing-dependent, our faster
+     * reads could step over it. This makes that testable without a rebuild.
+     * Always restored to 1: never leave the bus slowed, the EEPROM shares it.
+     *
+     * Capped at 20, not 200. s_i2c_slow is a GLOBAL multiplier on a bus whose
+     * mutex is taken per transaction, so between these six reads another task's
+     * EEPROM write can interleave and run slowed too; restoring the factor
+     * afterwards does not close that window. 20 keeps a stretched neighbour
+     * well inside the 5 s IWDG, and the sweep found no timing sensitivity at
+     * any factor, so the wider range bought nothing. */
+    char* b = get_cmd_buf();
+    uint8_t bi = get_cmd_idx();
+    uint16_t slow = 1;
+    if (bi >= 8 && b[6] == ' ') {
+        uint16_t v = 0;
+        for (int i = 7; i < bi && b[i] >= '0' && b[i] <= '9'; i++) v = (uint16_t)(v * 10 + (b[i] - '0'));
+        if (v > 0 && v <= 20) slow = v;
+    }
+    i2c_set_slow_factor(slow);
+
     uint8_t r[7] = {0};
     for (uint8_t i = 1; i <= 6; i++) {
         i2c_read_device_reg_noack(VIBRATION_I2C_ADDR, i, &r[i]);
     }
+    i2c_set_slow_factor(1);
+    if (slow != 1) { uart_puts("slow=1/"); print_num(slow); uart_puts("  "); }
     uart_puts("raw regs 1..6:");
     for (uint8_t i = 1; i <= 6; i++) { uart_puts(" 0x"); print_hex_byte(r[i]); }
 

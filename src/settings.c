@@ -1269,8 +1269,12 @@ void settings_set_advance_max(int16_t value) {
 }
 
 void settings_set_pulse_max(int16_t value) {
-    if (value < 50) value = 50;
-    if (value > 200) value = 200;
+    /* SU accepts 10..100. The old 50..200 was the range of PU, the register
+     * this setting was misdirected to until 2026-09-06: 101..200 stored fine
+     * and were then skipped for ever at sync, while 10..49 were legal for the
+     * register but unreachable from here. */
+    if (value < MCB_RANGE_PULSE_MAX_MIN) value = MCB_RANGE_PULSE_MAX_MIN;
+    if (value > MCB_RANGE_PULSE_MAX_MAX) value = MCB_RANGE_PULSE_MAX_MAX;
 
     if (current_settings.motor.pulse_max != value) {
         current_settings.motor.pulse_max = value;
@@ -1288,8 +1292,8 @@ void settings_set_motor_profile(uint8_t profile) {
 }
 
 void settings_set_speed_ramp(uint16_t value) {
-    if (value < 50) value = 50;
-    if (value > 2000) value = 2000;
+    if (value < MCB_RANGE_SPEED_RAMP_MIN) value = MCB_RANGE_SPEED_RAMP_MIN;
+    if (value > MCB_RANGE_SPEED_RAMP_MAX) value = MCB_RANGE_SPEED_RAMP_MAX;
 
     if (current_settings.motor.speed_ramp != value) {
         current_settings.motor.speed_ramp = value;
@@ -1298,8 +1302,10 @@ void settings_set_speed_ramp(uint16_t value) {
 }
 
 void settings_set_torque_ramp(uint16_t value) {
-    if (value < 50) value = 50;
-    if (value > 2000) value = 2000;
+    /* The MCB's range for SR. The old 50..2000 capped the menu's advertised
+     * 10000 at a fifth of it, silently. */
+    if (value < MCB_RANGE_TORQUE_RAMP_MIN) value = MCB_RANGE_TORQUE_RAMP_MIN;
+    if (value > MCB_RANGE_TORQUE_RAMP_MAX) value = MCB_RANGE_TORQUE_RAMP_MAX;
 
     if (current_settings.motor.torque_ramp != value) {
         current_settings.motor.torque_ramp = value;
@@ -1359,8 +1365,10 @@ void settings_set_dc_bus_voltage(uint16_t voltage) {
 }
 
 void settings_set_temp_threshold(uint8_t temp) {
-    if (temp < 40) temp = 40;     // Min 40°C
-    if (temp > 100) temp = 100;   // Max 100°C
+    /* TR accepts 4..75 degC. The old 40..100 was the range of CMD_TH, the
+     * under-voltage register this was misdirected to until 2026-09-06. */
+    if (temp < MCB_RANGE_TEMP_THRESH_MIN) temp = MCB_RANGE_TEMP_THRESH_MIN;
+    if (temp > MCB_RANGE_TEMP_THRESH_MAX) temp = MCB_RANGE_TEMP_THRESH_MAX;
 
     if (current_settings.power.temp_threshold != temp) {
         current_settings.power.temp_threshold = temp;
@@ -1378,8 +1386,10 @@ void settings_set_overload_threshold(uint8_t value) {
     if (current_settings.sensor.overload_threshold != value) {
         current_settings.sensor.overload_threshold = value;
         dirty = true;
-
-        motor_send_command(CMD_LD, value);
+        /* No MCB write. This sent CMD_LD, which the recovered parameter table
+         * shows is the Speed Ramp MINIMUM - so raising the overload threshold
+         * raised that minimum and got our own speed-ramp writes rejected. No
+         * register in the MCB's table is an overload trip point. */
     }
 }
 

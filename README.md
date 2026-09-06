@@ -342,7 +342,39 @@ the offending symbol.
 
 GPL-3.0 — see [LICENSE](LICENSE).
 
-Community reverse-engineered. No warranty. Use at your own risk.
+## Safety
+
+This firmware replaces the controller that drives a **machine tool with a
+powered spindle**. It participates in starting and stopping the motor and in
+the guard and E-Stop paths.
+
+- **Installing it is entirely at your own risk**, and will almost certainly
+  void any manufacturer warranty and support.
+- It is offered with **no warranty of any kind** — see sections 15 and 16 of
+  the GPL. Nothing here is certified for safety-critical use, and no claim is
+  made that it is as safe as the firmware it replaces.
+- Keep the original firmware images and your EEPROM contents backed up before
+  flashing. Restoring the OEM firmware is supported
+  (`./flash_firmware.sh original`) but depends on you having those files.
+- Never rely on software as your only protection. The physical guard, the
+  E-Stop and unplugging the machine are what actually keep you safe.
+
+## Trademarks and independence
+
+**Teknatool**, **NOVA** and **Voyager** are trademarks of their respective
+owners. This project is **not affiliated with, authorised by, endorsed by or
+supported by Teknatool International** or any of its distributors. Those names
+are used only to identify the hardware this firmware is compatible with.
+
+This is a clean, independent implementation. It contains **no manufacturer code
+and ships no manufacturer binaries.** Where the firmware has to interoperate
+with the original hardware — the motor-controller serial protocol, the EEPROM
+layout, the parameter registers — that interface was determined by independent
+analysis and by logic-analyzer captures of the wire, and is documented here in
+our own words as factual interface information.
+
+If you are the rights holder and something here concerns you, please open an
+issue.
 
 ## Credits
 

@@ -135,6 +135,20 @@ between two presets):
 | 0x62 | 1 | 0 | Tapping direction flag |
 | 0x63 | 1 | 0xFF | Unused |
 
+> **Confirmed by the OEM factory-reset routine, 2026-09-06.** `FUN_08017a94`
+> (0x08017a94), reached from the "Factory Reset" menu handler at 0x08004858,
+> writes these values explicitly — so the figures below are the manufacturer's
+> factory defaults, not inferences from one machine's EEPROM. It writes 250,
+> 900, 1600, 3000, 500, 1200, 2000, 2500 to 0x64..0x80, plus 0x7C to the magic
+> at 0x02 and 50 / 3000 / 250 / 100 to 0x40 / 0x44 / 0x32 / 0x30.
+>
+> It touches **no MCB parameters at all** — the setter primitive 0x0801b110 is
+> never called from it. Factory Reset restores HMI settings only; the motor
+> controller keeps its own parameters in its own EEPROM. That is why no
+> factory figures exist for Speed Ramp, Torque Ramp, Pulse Max or Current
+> Limit anywhere in the firmware, and why the manual lists defaults only for
+> V Kprop/V Kint and T Threshold.
+
 ### Speed Presets (0x64-0x83) — 8 × 16-bit big-endian, 4-byte stride
 | Offset | Value | Description |
 |--------|-------|-------------|
