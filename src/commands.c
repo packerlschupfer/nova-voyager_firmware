@@ -755,6 +755,7 @@ extern void cmd_mcbscan(void);  // MCB command discovery scanner
 #if defined(BUILD_READONLY) || defined(BUILD_DEBUG)
 extern void cmd_diag(void);     // read-only live MCB health summary
 extern void cmd_regscan(void);  // curated MCB register scan
+extern void cmd_mbounds(void);  // MCB parameter min/max bounds (read-only)
 extern void cmd_listen(void);   // raw MCB UART sniffer (SNIFF)
 #endif
 
@@ -906,6 +907,7 @@ const cmd_entry_t cmd_table[] = {
     // Read-only MCB diagnostics (demo + debug builds)
     {"DIAG",    cmd_diag,    0},
     {"REGSCAN", cmd_regscan, 0},
+    {"MBOUNDS", cmd_mbounds, 0},
     {"SNIFF",   cmd_listen,  0},
 #endif
 

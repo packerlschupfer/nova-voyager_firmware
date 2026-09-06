@@ -373,8 +373,11 @@ static menu_item_t sensor_menu[] = {
     {"< Back",  MENU_BACK, NULL, 0, 0, 0, 0, NULL, 0},
 };
 static menu_item_t advanced_menu[] = {
-    {"SpdKp",   MENU_INT,  &s_speed_kp, 0, 9999, 50, 0, NULL, 0},
-    {"SpdKi",   MENU_INT,  &s_speed_ki, 0, 9999, 50, 0, NULL, 0},
+    /* Percent, not MCB units - motor.c scales by MCB_SPEED_PI_SCALE on the way
+     * out. The old 0..9999 range was the MCB's own, which made the menu offer
+     * values ten times larger than the field actually means. */
+    {"SpdKp",   MENU_INT,  &s_speed_kp, 1, 999, 5, 0, NULL, 0},
+    {"SpdKi",   MENU_INT,  &s_speed_ki, 1, 999, 5, 0, NULL, 0},
     {"VltKp",   MENU_INT,  &s_voltage_kp, 0, 9999, 50, 0, NULL, 0},
     {"VltKi",   MENU_INT,  &s_voltage_ki, 0, 9999, 50, 0, NULL, 0},
     /* REVIEW FIX (HIGH): max was 9999 while the factory default is 28835
@@ -390,9 +393,13 @@ static menu_item_t advanced_menu[] = {
 };
 static menu_item_t motor_menu[] = {
     {"Profl",   MENU_ENUM, &s_motor_profile, 0, 2, 1, 3, motor_profile_opts, 0},
-    {"SpdRmp",  MENU_INT,  &s_speed_ramp, 50, 2000, 50, 0, NULL, 0},
-    {"TrqRmp",  MENU_INT,  &s_torque_ramp, 50, 2000, 50, 0, NULL, 0},
-    {"CurLim",  MENU_INT,  &s_current_limit, 10, 100, 5, 0, NULL, 0},
+    /* Ranges below are the MCB's own, read back with MBOUNDS on 2026-09-06.
+     * They used to be 50..2000 for both ramps, which bore no relation to what
+     * the controller accepts - the torque ramp in particular was addressed to
+     * the wrong register entirely, so its range had never been tested. */
+    {"SpdRmp",  MENU_INT,  &s_speed_ramp, 50, 1000, 50, 0, NULL, 0},
+    {"TrqRmp",  MENU_INT,  &s_torque_ramp, 1000, 10000, 500, 0, NULL, 0},
+    {"CurLim",  MENU_INT,  &s_current_limit, 20, 100, 5, 0, NULL, 0},
     {"TempC",   MENU_INT,  &s_mcb_temp, 0, 150, 0, 0, NULL, 0},  // Read-only (step=0)
     {"Advanc",  MENU_SUBMENU, NULL, 0, 0, 0, 0, NULL, SUBMENU_ADVANCED},
     {"< Back",  MENU_BACK, NULL, 0, 0, 0, 0, NULL, 0},

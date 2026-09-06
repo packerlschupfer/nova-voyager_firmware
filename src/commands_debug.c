@@ -1065,6 +1065,85 @@ void cmd_vib(void) {
  * different address" and "the device needs waking first" are three very
  * different problems that look identical from a single failed read.
  */
+/* MBOUNDS - ask the MCB for the valid range of each motor parameter.
+ *
+ * WHY: our settings headers carry hand-written ranges ("torque_ramp (50-2000)")
+ * that nobody has ever checked against the controller. The MCB knows its own
+ * limits: the OEM service menu reads a max (H*), a min (L*) and the current
+ * value for every parameter before letting the operator edit it. See
+ * MCB_PARAM_TABLE in config.h for how that mapping was recovered.
+ *
+ * Read-only. Every query here is a parameterless QUERY frame, which the MCB
+ * answers without changing anything - a parameter would make it a write.
+ *
+ * The out-of-range marker is also the cheapest test of the table itself: our
+ * command names for PU/IU/TR/SR conflict with the OEM menu's, so if a value we
+ * believe is (say) a torque ramp sits far outside the range its supposed
+ * register reports, our name for that register is the thing that is wrong. */
+typedef struct {
+    const char* name;
+    uint16_t    cur;
+    uint16_t    min;
+    uint16_t    max;
+} mcb_param_bounds_t;
+
+static const mcb_param_bounds_t MCB_BOUNDS[] = {
+    { "Output Power Limit", CMD_CURRENT_LIMIT,  CMD_MIN_POWER_LIMIT, CMD_MAX_POWER_LIMIT },
+    { "Edit Spd Kprop",     CMD_KPROP,          CMD_MIN_SPD_KPROP,   CMD_MAX_SPD_KPROP   },
+    { "Edit Spd Kint",      CMD_KINT,           CMD_MIN_SPD_KINT,    CMD_MAX_SPD_KINT    },
+    { "Edit Voltage Kp",    0x5055 /* PU */,    CMD_MIN_VOLT_KP,     CMD_MAX_VOLT_KP     },
+    { "Edit Voltage Ki",    0x4955 /* IU */,    CMD_MIN_VOLT_KI,     CMD_MAX_VOLT_KI     },
+    { "Temp Threshold",     0x5452 /* TR */,    CMD_MIN_TEMP_THRESH, CMD_MAX_TEMP_THRESH },
+    { "Vd Low Limit",       0x5557 /* UW */,    CMD_MIN_VD_LOW,      CMD_MAX_VD_LOW      },
+    { "Vd Ref ON",          0x424E /* BN */,    CMD_MIN_VD_REF_ON,   CMD_MAX_VD_REF_ON   },
+    { "Vd Ref OFF",         0x4246 /* BF */,    CMD_MIN_VD_REF_OFF,  CMD_MAX_VD_REF_OFF  },
+    { "Spd Adv Max",        0x4E43 /* NC */,    CMD_MIN_SPD_ADV_MAX, CMD_MAX_SPD_ADV_MAX },
+    { "Speed Ramp",         CMD_SET_SPD_RMP,    CMD_MIN_SPEED_RAMP,  CMD_MAX_SPEED_RAMP  },
+    { "Torque Ramp",        0x5352 /* SR */,    CMD_MIN_TORQUE_RAMP, CMD_MAX_TORQUE_RAMP },
+    { "Adv Max",            CMD_SET_ADV_MAX,    CMD_MIN_ADV_MAX,     CMD_MAX_ADV_MAX     },
+    { "Pulse Max",          0x5355 /* SU */,    CMD_MIN_PULSE_MAX,   CMD_MAX_PULSE_MAX   },
+    { "Under Volt Stop",    0x5453 /* TS */,    CMD_MIN_UV_STOP,     CMD_MAX_UV_STOP     },
+    { "Under Volt Run",     0x5556 /* UV */,    CMD_MIN_UV_RUN,      CMD_MAX_UV_RUN      },
+};
+
+static void mbounds_print_field(int32_t v) {
+    if (v < 0) uart_puts("   err");
+    else       print_num(v);
+    uart_puts("\t");
+}
+
+void cmd_mbounds(void) {
+    uart_puts("MCB parameter bounds (read-only queries)\r\n");
+    uart_puts("parameter           cmd  cur\tmin\tmax\r\n");
+
+    for (unsigned i = 0; i < sizeof(MCB_BOUNDS) / sizeof(MCB_BOUNDS[0]); i++) {
+        const mcb_param_bounds_t* p = &MCB_BOUNDS[i];
+
+        uart_puts(p->name);
+        for (unsigned pad = (unsigned)strlen(p->name); pad < 20; pad++) uart_putc(' ');
+        uart_putc((char)((p->cur >> 8) & 0xFF));
+        uart_putc((char)(p->cur & 0xFF));
+        uart_puts("   ");
+
+        const int32_t cur = motor_read_param(p->cur);
+        const int32_t min = motor_read_param(p->min);
+        const int32_t max = motor_read_param(p->max);
+        mbounds_print_field(cur);
+        mbounds_print_field(min);
+        mbounds_print_field(max);
+
+        /* Only flag when all three answered; a timeout is not an out-of-range. */
+        if (cur >= 0 && min >= 0 && max >= 0 && max >= min &&
+            (cur < min || cur > max)) {
+            uart_puts("  <-- OUT OF RANGE");
+        }
+        uart_puts("\r\n");
+
+        HEARTBEAT_UPDATE_MOTOR();
+    }
+    uart_puts("Names come from the OEM service menu; see MCB_PARAM_TABLE in config.h.\r\n");
+}
+
 void cmd_i2cscan(void) {
     /* Optional speed factor: "I2CSCAN 8" runs the bus 8x slower. A device that
      * NAKs at EEPROM speed but answers slowly is indistinguishable from an

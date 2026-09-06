@@ -83,18 +83,18 @@ typedef enum {
 
 // Motor/PID control parameters
 typedef struct {
-    int16_t speed_kprop;        // Speed proportional gain (x100)
-    int16_t speed_kint;         // Speed integral gain (x100)
+    int16_t speed_kprop;        // Speed Kprop, PERCENT (MCB "SP" = value*10)
+    int16_t speed_kint;         // Speed Kint, PERCENT (MCB "SI" = value*10)
     int16_t voltage_kp;         // Voltage Kp (x100)
     int16_t voltage_ki;         // Voltage Ki (x100)
     int16_t ir_gain;            // IR gain (x100)
     int16_t ir_offset;          // IR offset
     int16_t advance_max;        // Speed advance max
-    int16_t pulse_max;          // Pulse max
+    int16_t pulse_max;          // Pulse max, MCB "SU" (10-100)
     uint16_t current_limit;     // Current limit (%)
     uint8_t  profile;           // motor_profile_t: Soft/Normal/Hard
-    uint16_t speed_ramp;        // Speed ramp rate (RPM/s, 50-2000)
-    uint16_t torque_ramp;       // Torque ramp rate (50-2000)
+    uint16_t speed_ramp;        // Speed ramp, MCB "DN" (50-1000)
+    uint16_t torque_ramp;       // Torque ramp, MCB "SR" (1000-10000)
 } motor_params_t;
 
 // Speed settings

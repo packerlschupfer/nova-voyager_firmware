@@ -292,11 +292,15 @@ static void set_defaults(settings_t* s) {
     s->motor.ir_gain = 28835;        // Factory: 28835
     s->motor.ir_offset = 400;        // Factory: 400
     s->motor.advance_max = 85;       // Factory: 85
-    s->motor.pulse_max = 185;        // Factory: 185 ✓
+    s->motor.pulse_max = 50;         // MCB "SU", range 10-100; 50 is what the
+                                     // controller holds. The old 185 was read
+                                     // back through the wrong register (PU).
     s->motor.current_limit = 100;    // Factory: 100% ✓
     s->motor.profile = MOTOR_PROFILE_NORMAL;
     s->motor.speed_ramp = 1000;      // Factory: 1000 RPM/s (NOT 500!)
-    s->motor.torque_ramp = 75;       // Factory: 75 (NOT 500!)
+    s->motor.torque_ramp = 1000;     // MCB "SR", range 1000-10000. The old 75
+                                     // was the THERMAL THRESHOLD read back via
+                                     // TR, not a torque ramp at all.
 
     // Speed defaults (CG variant: 250-5500 RPM)
     s->speed.default_rpm = SPEED_DEFAULT_RPM;

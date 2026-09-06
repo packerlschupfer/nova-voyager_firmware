@@ -166,19 +166,39 @@
 #define CMD_START           0x5354      // "ST" - Start motor
 #define CMD_SET_SPEED       0x5356      // "SV" - Set/Read speed
 #define CMD_GET_FLAGS       0x4746      // "GF" - Get flags/status
-#define CMD_SET_KP          0x4B50      // "KP" - Set speed Kp
-#define CMD_SET_KI          0x4B49      // "KI" - Set speed Ki
-#define CMD_SET_VKP         0x5650      // "VP" - Set voltage Kp
-#define CMD_SET_VKI         0x5649      // "VI" - Set voltage Ki
-#define CMD_SET_IR_GAIN     0x4955      // "IU" - Set IR gain (I=0x49, U=0x55) - sends "IU"
-#define CMD_SET_IR_OFFSET   0x4F56      // "OV" - Set IR offset (O=0x4F, V=0x56) - sends "OV"
-#define CMD_SET_ILIM        0x494C      // "IL" - Set current limit factory max (I=0x49, L=0x4C)
+/* Speed PI coefficients. "KP"/"KI" are absent from the MCB's parameter table
+ * and those writes went nowhere; the real registers are SP (Kprop) and SI
+ * (Kint), range 10..9999 each.
+ *
+ * SCALE: the MCB works in per-mille and we store percent. MBOUNDS reads
+ * SP=1000 / SI=500 against our stored 100 / 50 - the same x10 on both, which
+ * is what identifies the unit rather than a coincidence. Writes go through
+ * MCB_SPEED_PI_SCALE; getting this backwards detunes the loop by 10x in one
+ * direction or the other, so it is a named constant and not a literal.
+ *
+ * The manual (p.22) notes Kprop/Kint "cannot be saved into the EEPROM memory
+ * because it is based on the speed profile parameter" - the controller derives
+ * them from the profile, so they must be re-sent after any profile change.
+ *
+ * These two live on different paths and there is no ordering guarantee between
+ * them: the profile is applied by CMD_MOTOR_APPLY_SETTINGS (events.c ->
+ * task_motor.c -> motor_set_profile), while SP/SI are only sent by
+ * motor_sync_settings(), which runs from MSYNC/MSAVE and NOT at boot. So a
+ * profile change can silently revert the gains. Re-run MSYNC afterwards. */
+#define CMD_SET_KP          0x5350      // "SP" - speed Kprop. Was "KP" (no-op).
+#define CMD_SET_KI          0x5349      // "SI" - speed Kint.  Was "KI" (no-op).
+#define MCB_SPEED_PI_SCALE  10          // stored percent -> MCB per-mille
+#define CMD_SET_VKP         0x5055      // "PU" - Voltage Kp (100..9999).  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_SET_VKI         0x4955      // "IU" - Voltage Ki (100..9999).  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_SET_IR_GAIN     0x4930      // "I0" - IR Gain. Was "IU" = Voltage Ki.  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_SET_IR_OFFSET   0x4933      // "I3" - IR Offset. Was "OV" (not in OEM table).  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_SET_ILIM        0x494C      // "IL" - Voltage Ki MINIMUM, not a current limit. Unused.
 #define CMD_CURRENT_LIMIT   0x434C      // "CL" - Set power output runtime (C=0x43, L=0x4C) - Low/Med/High
 #define CMD_SET_BRAKE       0x4252      // "BR" - Set brake mode (B=0x42, R=0x52) - sends "BR"
-#define CMD_SET_PULSE_MAX   0x5055      // "PU" - Set pulse max (P=0x50, U=0x55) - sends "PU"
+#define CMD_SET_PULSE_MAX   0x5355      // "SU" - Pulse Max (10..100). Was "PU" = Voltage Kp.  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
 #define CMD_SET_ADV_MAX     0x5341      // "SA" - Set advance max (S=0x53, A=0x41) - sends "SA"
 #define CMD_SET_SPD_RMP     0x444E      // "DN" - Speed ramp (confirmed from disassembly, NOT "SR")
-#define CMD_SET_TRQ_RMP     0x5452      // "TR" - Set torque ramp
+#define CMD_SET_TRQ_RMP     0x5352      // "SR" - Torque Ramp (1000..10000). Was "TR" = THERMAL THRESHOLD.  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
 
 // PID parameters (discovered 2026-01-25 via service menu)
 // NOTE: SP/SI are the REAL Kprop/Kint! VP/VI may be unused or different.
@@ -200,13 +220,13 @@
 #define CMD_PROFILE_S8      0x5338      // "S8" - SOFT profile (gentle, LOW torque)
 
 // Sensor monitoring commands (require CL query unlock at boot!)
-#define CMD_HT              0x4854      // "HT" - Heat/thermal query (MCB heatsink temp)
-#define CMD_TH              0x5448      // "TH" - Thermal high threshold
-#define CMD_TL              0x544C      // "TL" - Thermal low threshold
+#define CMD_HT              0x4854      // "HT" - Temp Threshold MAXIMUM (see MCB_PARAM_TABLE)
+#define CMD_TH              0x5448      // "TH" - Under Volt Stop MAXIMUM (NOT thermal)
+#define CMD_TL              0x544C      // "TL" - Under Volt Stop MINIMUM (NOT thermal)
 #define CMD_T0              0x5430      // "T0" - Thermal baseline
-#define CMD_LD              0x4C44      // "LD" - Load threshold (50% = overload trip point)
-#define CMD_LP              0x4C50      // "LP" - Static config (always 10), NOT live load — KR is the live register
-#define CMD_HP              0x4850      // "HP" - Hardware/alert query
+#define CMD_LD              0x4C44      // "LD" - Speed Ramp MINIMUM (not a load threshold)
+#define CMD_LP              0x4C50      // "LP" - Spd Kprop MINIMUM (the constant 10 IS that minimum)
+#define CMD_HP              0x4850      // "HP" - Spd Kprop MAXIMUM (not a hardware query)
 #define CMD_SP_QUERY        0x5350      // "SP" - Speed percentage query
 
 // Spindle Hold commands (discovered 2026-01-24 via logic analyzer capture)
@@ -217,13 +237,133 @@
 #define CMD_SL              0x534C      // "SL" - Speed Limit (10 in hold mode)
 
 // Read commands (query format) - based on SCAN results from MCB
-#define CMD_GET_PULSE_MAX   0x5055      // "PU" - Get pulse max (P=0x50, U=0x55) - verified working
+#define CMD_GET_PULSE_MAX   0x5355      // "SU" - Get Pulse Max.  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
 #define CMD_GET_ADV_MAX     0x5341      // "SA" - Get advance max (S=0x53, A=0x41) - verified working
-#define CMD_GET_IR_GAIN     0x4955      // "IU" - Get IR gain (I=0x49, U=0x55) - verified working
-#define CMD_GET_IR_OFFSET   0x4F56      // "OV" - Get IR offset (O=0x4F, V=0x56) - verified working
-#define CMD_GET_CUR_LIM     0x494C      // "IL" - Get current limit (I=0x49, L=0x4C) - verified working
-#define CMD_GET_SPD_RMP     0x5352      // "SR" - Get speed ramp (S=0x53, R=0x52) - verified working
-#define CMD_GET_TRQ_RMP     0x5452      // "TR" - Get torque ramp (T=0x54, R=0x52) - verified working
+#define CMD_GET_IR_GAIN     0x4930      // "I0" - Get IR Gain.  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_GET_IR_OFFSET   0x4933      // "I3" - Get IR Offset.  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_GET_CUR_LIM     0x434C      // "CL" - Get Output Power Limit (20..100).  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_GET_SPD_RMP     0x444E      // "DN" - Get Speed Ramp (50..1000).  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+#define CMD_GET_TRQ_RMP     0x5352      // "SR" - Get Torque Ramp (1000..10000).  // CORRECTED 2026-09-06 (MCB_PARAM_TABLE + MBOUNDS)
+
+// ============================================================================
+// MCB_PARAM_TABLE - the MCB's own parameter accessor table
+// ----------------------------------------------------------------------------
+// Recovered 2026-09-06 from the OEM service menu in firmware_r2p06k_cg.bin
+// (base 0x08003000). Every editable motor parameter is reached through FOUR
+// accessors, and the OEM's own menu code proves the mapping: each menu handler
+// reads max, then min, then current, and passes them to the menu editor at
+// 0x0801554c together with the label string. Example, "Speed Ramp" at
+// 0x0801656c:
+//
+//     bl HD -> r5 (max) ; bl LD -> r6 (min) ; bl DN -> r7 (current)
+//     r3=max r2=min r1=current r0=&"Speed Ramp" ; bl 0x0801554c
+//
+//   label                current  min  max
+//   -------------------  -------  ---  ---
+//   Output Power Limit   CL       LL   HL
+//   Edit Spd Kprop       SP       LP   HP
+//   Edit Spd Kint        SI       LI   HI
+//   Edit Voltage Kp      PU       UL   UH
+//   Edit Voltage Ki      IU       IL   IH
+//   Temp Threshold       TR       LT   HT
+//   Vd Low Limit         UW       WL   WH
+//   Vd Ref ON            BN       LN   HN
+//   Vd Ref OFF           BF       LF   HF
+//   Spd Adv Max          NC       SC   TC
+//   Speed Ramp           DN       LD   HD
+//   Torque Ramp          SR       LR   HR
+//   Adv Max              SA       LA   HA
+//   Pulse Max            SU       LU   HU
+//   Under Volt Stop      TS       TL   TH
+//   Under Volt Run       UV       LM   HM
+//   IR Gain              I0       -    -
+//   IR Offset            I3       -    -
+//
+// CONFLICTS with the older guesses above - RESOLVED on hardware 2026-09-06 by
+// asking the MCB for each parameter's own range (console: MBOUNDS). The ranges
+// settle it; the OEM labels are right and the macros below are wrong:
+//
+//   cmd  our name      OEM name          MCB range   the value WE put there
+//   ---  -----------   ---------------   ---------   ----------------------
+//   TR   torque ramp   Temp Threshold      4..75     torque_ramp
+//   SR   speed ramp    Torque Ramp     1000..10000   (read only)
+//   IU   IR gain       Edit Voltage Ki  100..9999    ir_gain = 28835
+//   PU   pulse max     Edit Voltage Kp  100..9999    pulse_max = 50
+//   SU   -             Pulse Max          10..100    (this is the real one)
+//   I0   -             IR Gain            -          (this is the real one)
+//   IL   current limit Voltage Ki min      -
+//   VP/VI are absent from the table and read back 0 on our MCB.
+//
+// A range of 4..75 is a temperature, not a ramp rate; 1000..10000 is a ramp
+// rate, not a temperature. ir_gain=28835 and pulse_max=50 both fall outside
+// the register we send them to, which is how a wrong mapping shows itself.
+//
+// !! NOT YET FIXED. motor.c still writes torque_ramp -> TR (the MCB's thermal
+// !! threshold), ir_gain -> IU and pulse_max -> PU. Changing those alters real
+// !! motor behaviour, so it is a deliberate decision, not a drive-by edit.
+// !! Nothing that writes has been changed by this commit.
+// ============================================================================
+
+// Ranges the MCB reported for itself (console: MBOUNDS, 2026-09-06, MCB B1.7).
+// Used to clamp every parameter write - see motor_send_param_clamped(). These
+// are cached rather than queried at motor-init time on purpose: a query that
+// times out during sync must not be able to turn into an unclamped write.
+// Re-verify with MBOUNDS; it prints the live values next to the current ones.
+#define MCB_RANGE_POWER_LIMIT_MIN     20
+#define MCB_RANGE_POWER_LIMIT_MAX    100
+#define MCB_RANGE_SPD_KPROP_MIN       10
+#define MCB_RANGE_SPD_KPROP_MAX     9999
+#define MCB_RANGE_SPD_KINT_MIN        10
+#define MCB_RANGE_SPD_KINT_MAX      9999
+#define MCB_RANGE_VOLT_KP_MIN        100
+#define MCB_RANGE_VOLT_KP_MAX       9999
+#define MCB_RANGE_VOLT_KI_MIN        100
+#define MCB_RANGE_VOLT_KI_MAX       9999
+#define MCB_RANGE_SPEED_RAMP_MIN      50
+#define MCB_RANGE_SPEED_RAMP_MAX    1000
+#define MCB_RANGE_TORQUE_RAMP_MIN   1000
+#define MCB_RANGE_TORQUE_RAMP_MAX  10000
+#define MCB_RANGE_SPEED_PI_MIN        10
+#define MCB_RANGE_SPEED_PI_MAX      9999
+#define MCB_RANGE_TEMP_THRESH_MIN      4
+#define MCB_RANGE_TEMP_THRESH_MAX     75
+#define MCB_RANGE_PULSE_MAX_MIN       10
+#define MCB_RANGE_PULSE_MAX_MAX      100
+
+// Bounds accessors: minimum (L*) and maximum (H*) for each parameter above.
+// Parameterless query = read; these are read-only in our firmware.
+#define CMD_MIN_POWER_LIMIT  0x4C4C     // "LL" - Output Power Limit minimum
+#define CMD_MAX_POWER_LIMIT  0x484C     // "HL" - Output Power Limit maximum
+#define CMD_MIN_SPD_KPROP    0x4C50     // "LP" - Spd Kprop minimum
+#define CMD_MAX_SPD_KPROP    0x4850     // "HP" - Spd Kprop maximum
+#define CMD_MIN_SPD_KINT     0x4C49     // "LI" - Spd Kint minimum
+#define CMD_MAX_SPD_KINT     0x4849     // "HI" - Spd Kint maximum
+#define CMD_MIN_VOLT_KP      0x554C     // "UL" - Voltage Kp minimum
+#define CMD_MAX_VOLT_KP      0x5548     // "UH" - Voltage Kp maximum
+#define CMD_MIN_VOLT_KI      0x494C     // "IL" - Voltage Ki minimum
+#define CMD_MAX_VOLT_KI      0x4948     // "IH" - Voltage Ki maximum
+#define CMD_MIN_TEMP_THRESH  0x4C54     // "LT" - Temp Threshold minimum
+#define CMD_MAX_TEMP_THRESH  0x4854     // "HT" - Temp Threshold maximum
+#define CMD_MIN_VD_LOW       0x574C     // "WL" - Vd Low Limit minimum
+#define CMD_MAX_VD_LOW       0x5748     // "WH" - Vd Low Limit maximum
+#define CMD_MIN_VD_REF_ON    0x4C4E     // "LN" - Vd Ref ON minimum
+#define CMD_MAX_VD_REF_ON    0x484E     // "HN" - Vd Ref ON maximum
+#define CMD_MIN_VD_REF_OFF   0x4C46     // "LF" - Vd Ref OFF minimum
+#define CMD_MAX_VD_REF_OFF   0x4846     // "HF" - Vd Ref OFF maximum
+#define CMD_MIN_SPD_ADV_MAX  0x5343     // "SC" - Spd Adv Max minimum
+#define CMD_MAX_SPD_ADV_MAX  0x5443     // "TC" - Spd Adv Max maximum
+#define CMD_MIN_SPEED_RAMP   0x4C44     // "LD" - Speed Ramp minimum
+#define CMD_MAX_SPEED_RAMP   0x4844     // "HD" - Speed Ramp maximum
+#define CMD_MIN_TORQUE_RAMP  0x4C52     // "LR" - Torque Ramp minimum
+#define CMD_MAX_TORQUE_RAMP  0x4852     // "HR" - Torque Ramp maximum
+#define CMD_MIN_ADV_MAX      0x4C41     // "LA" - Adv Max minimum
+#define CMD_MAX_ADV_MAX      0x4841     // "HA" - Adv Max maximum
+#define CMD_MIN_PULSE_MAX    0x4C55     // "LU" - Pulse Max minimum
+#define CMD_MAX_PULSE_MAX    0x4855     // "HU" - Pulse Max maximum
+#define CMD_MIN_UV_STOP      0x544C     // "TL" - Under Volt Stop minimum
+#define CMD_MAX_UV_STOP      0x5448     // "TH" - Under Volt Stop maximum
+#define CMD_MIN_UV_RUN       0x4C4D     // "LM" - Under Volt Run minimum
+#define CMD_MAX_UV_RUN       0x484D     // "HM" - Under Volt Run maximum
 
 // ============================================================================
 // UNDOCUMENTED COMMANDS (discovered 2026-01-24 via disassembly analysis)
@@ -323,7 +463,7 @@
 #define CMD_LO              0x4C4F      // "LO" - ? Low
 #define CMD_HR              0x4852      // "HR" - Ramp High
 #define CMD_LR              0x4C52      // "LR" - Ramp Low
-#define CMD_LT              0x4C54      // "LT" - Temperature Low (complement to HT)
+#define CMD_LT              0x4C54      // "LT" - Temp Threshold MINIMUM (complement to HT)
 #define CMD_HU              0x4855      // "HU" - ? High
 #define CMD_LU              0x4C55      // "LU" - ? Low
 #define CMD_HV              0x4856      // "HV" - Voltage High
@@ -437,6 +577,10 @@
 #define MOTOR_FACTORY_CUR_LIM           70      // Current Limit factory default (%)
 #define MOTOR_FACTORY_SPD_RMP           1000    // Speed Ramp factory default
 #define MOTOR_FACTORY_TRQ_RMP           2000    // Torque Ramp factory default
+/* Voyager Drill Press manual (833-Voyager, 19 Jan 2021, p.22), "Advanced Motor
+ * Parameters": V kprop / V kint = 2000 / 9000, T Threshold = 60 degC
+ * ("temperature threshold for current reduction"). */
+#define MOTOR_FACTORY_TEMP_THRESHOLD    60      // degC - manual default
 #define MOTOR_FACTORY_VOLTAGE_KP        2000    // Voltage Kp factory default
 #define MOTOR_FACTORY_VOLTAGE_KI        9000    // Voltage Ki factory default
 

@@ -401,14 +401,68 @@ uint16_t motor_get_vibration(void) {
     return motor_status.vibration;
 }
 
+/* Send a parameter, clamped to the range the MCB reports for that register.
+ *
+ * WHY: until 2026-09-06 several parameters were addressed to the wrong
+ * register - torque_ramp went to TR, which is the MCB's THERMAL THRESHOLD, and
+ * pulse_max/ir_gain went to the voltage PID registers. The mapping is fixed
+ * now, but the stored "factory defaults" were themselves observed through that
+ * wrong mapping (pulse_max=185 against a register whose maximum is 100,
+ * torque_ramp=75 against one whose minimum is 1000), so a settings value can
+ * still be nonsense for the register it now reaches.
+ *
+ * Clamping makes that harmless: an out-of-range setting becomes a legal
+ * extreme instead of a rejected write or, worse, a plausible value in the
+ * wrong register. It also announces itself, so a mis-scaled setting shows up
+ * in the sync log rather than silently doing nothing.
+ *
+ * Ranges are the cached MCB_RANGE_* constants, not live queries - a query that
+ * times out during motor init must not be able to degrade into an unclamped
+ * write. MBOUNDS re-verifies them against the live MCB on demand. */
+static bool motor_send_param_checked(uint16_t cmd, int32_t value,
+                                     int32_t lo, int32_t hi, const char* name) {
+    if (value < lo || value > hi) {
+        /* SKIP, do not clamp. An out-of-range stored value means the setting is
+         * stale or mis-scaled - several were saved against the wrong register
+         * before 2026-09-06 - and clamping such a value to an extreme is its
+         * own silent change. pulse_max=185 would clamp to 100 and move the
+         * controller off the 50 it actually runs at. Leaving the MCB's value
+         * alone is the conservative reading of a setting we cannot trust. */
+        uart_puts("  SKIP ");
+        uart_puts(name);
+        uart_puts(" ");
+        print_num(value);
+        uart_puts(" outside MCB range ");
+        print_num(lo);
+        uart_puts("..");
+        print_num(hi);
+        uart_puts(" - MCB value left as is\r\n");
+        return true;   /* not a sync failure; the MCB is untouched and valid */
+    }
+    return motor_send_command(cmd, (int16_t)value);
+}
+
 // motor_set_pid, motor_set_current_limit removed — zero callers
 // PID is set via motor_sync_settings, current limit via CL command directly
 
 void motor_set_ir_comp(int16_t ir_gain, int16_t ir_offset) {
-    // Send IR gain and offset as separate 16-bit values
-    // Phase 4.1: Factory defaults now in config.h (MOTOR_FACTORY_IR_GAIN/OFFSET)
-    motor_send_command(CMD_SET_IR_GAIN, ir_gain);
-    motor_send_command(CMD_SET_IR_OFFSET, ir_offset);
+    /* I0 / I3 are the real IR gain and offset. These used to be addressed to IU
+     * and OV - IU being the voltage Ki register, which rejected the value as
+     * out of range - so the true I0/I3 have sat at 0 for the life of this
+     * firmware, measured on the machine 2026-09-06.
+     *
+     * DELIBERATELY NOT SENT, for the same reason as the voltage PID above:
+     * enabling it would apply IR compensation to a machine that has always run
+     * without it, as a side effect of fixing the addressing. That is a tuning
+     * change and needs its own validation under load. The console commands I0
+     * and I3 read the live values.
+     *
+     * To enable: delete the guard and validate. */
+    (void)ir_gain; (void)ir_offset;
+    if (0) {
+        motor_send_command(CMD_SET_IR_GAIN, ir_gain);
+        motor_send_command(CMD_SET_IR_OFFSET, ir_offset);
+    }
 }
 
 // motor_set_pulse_max, motor_set_advance_max, motor_restore_mcb_defaults removed
@@ -598,6 +652,20 @@ int32_t motor_read_param(uint16_t cmd) {
     return value;
 }
 
+/* Print the two ASCII characters of an MCB command code, e.g. 0x5355 -> "SU".
+ *
+ * WHY: until 2026-09-06 this function announced each read with a hand-written
+ * register name that had drifted away from the macro actually being sent -
+ * "Reading PulseMax (SU)" while the code sent CMD_GET_PULSE_MAX, which is
+ * "PU". Six of the nine labels were wrong that way. The console therefore
+ * reported plausible-looking names against the wrong registers, which is
+ * precisely why nobody noticed. Deriving the printed code from the macro makes
+ * that class of drift impossible: the text cannot disagree with the wire. */
+static void print_cmd_code(uint16_t cmd) {
+    uart_putc((char)((cmd >> 8) & 0xFF));
+    uart_putc((char)(cmd & 0xFF));
+}
+
 bool motor_read_mcb_params(mcb_params_t* params) {
     if (params == NULL) return false;
     memset(params, 0, sizeof(*params));
@@ -606,8 +674,16 @@ bool motor_read_mcb_params(mcb_params_t* params) {
     // ~3-5ms delay at 72MHz - allows MCB to process before next query
     #define MCB_DELAY() do { for (volatile int _d = 0; _d < MOTOR_UART_SPIN_DELAY_LOOPS; _d++); } while(0)
 
+    /* Announce a read as "  Reading <label> (<XX>)..." with <XX> taken from the
+     * command macro itself, so the two can never disagree. */
+    #define MCB_ANNOUNCE(label, cmdcode) do { \
+        uart_puts("  Reading " label " ("); \
+        print_cmd_code(cmdcode); \
+        uart_puts(")..."); \
+    } while(0)
+
     // Read all parameters with inter-query delay
-    uart_puts("  Reading PulseMax (SU)...");
+    MCB_ANNOUNCE("PulseMax", CMD_GET_PULSE_MAX);
     params->pulse_max = motor_read_param(CMD_GET_PULSE_MAX);
     if (params->pulse_max < 0) {
         uart_puts(" FAILED\r\n");
@@ -617,42 +693,42 @@ bool motor_read_mcb_params(mcb_params_t* params) {
     uart_puts(" OK ("); print_num(params->pulse_max); uart_puts(")\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading AdvMax (SA)...");
+    MCB_ANNOUNCE("AdvMax",   CMD_GET_ADV_MAX);
     params->adv_max = motor_read_param(CMD_GET_ADV_MAX);
     uart_puts(params->adv_max >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading IRGain (I0)...");
+    MCB_ANNOUNCE("IRGain",   CMD_GET_IR_GAIN);
     params->ir_gain = motor_read_param(CMD_GET_IR_GAIN);
     uart_puts(params->ir_gain >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading IROffset (I3)...");
+    MCB_ANNOUNCE("IROffset", CMD_GET_IR_OFFSET);
     params->ir_offset = motor_read_param(CMD_GET_IR_OFFSET);
     uart_puts(params->ir_offset >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading CurLim (CL)...");
+    MCB_ANNOUNCE("CurLim",   CMD_GET_CUR_LIM);
     params->cur_lim = motor_read_param(CMD_GET_CUR_LIM);
     uart_puts(params->cur_lim >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading SpdRmp (DN)...");
+    MCB_ANNOUNCE("SpdRmp",   CMD_GET_SPD_RMP);
     params->spd_rmp = motor_read_param(CMD_GET_SPD_RMP);
     uart_puts(params->spd_rmp >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading TrqRmp (SR)...");
+    MCB_ANNOUNCE("TrqRmp",   CMD_GET_TRQ_RMP);
     params->trq_rmp = motor_read_param(CMD_GET_TRQ_RMP);
     uart_puts(params->trq_rmp >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading VoltKp (VP)...");
+    MCB_ANNOUNCE("VoltKp",   CMD_SET_VKP);
     params->voltage_kp = motor_read_param(CMD_SET_VKP);
     uart_puts(params->voltage_kp >= 0 ? " OK\r\n" : " FAILED\r\n");
     MCB_DELAY();
 
-    uart_puts("  Reading VoltKi (VI)...");
+    MCB_ANNOUNCE("VoltKi",   CMD_SET_VKI);
     params->voltage_ki = motor_read_param(CMD_SET_VKI);
     uart_puts(params->voltage_ki >= 0 ? " OK\r\n" : " FAILED\r\n");
 
@@ -666,11 +742,19 @@ bool motor_read_mcb_params(mcb_params_t* params) {
 }
 
 void motor_set_speed_ramp(uint16_t ramp_rate) {
-    motor_send_command(CMD_SET_SPD_RMP, ramp_rate);
+    motor_send_param_checked(CMD_SET_SPD_RMP, (int32_t)ramp_rate,
+                             MCB_RANGE_SPEED_RAMP_MIN, MCB_RANGE_SPEED_RAMP_MAX,
+                             "speed_ramp");
 }
 
 void motor_set_torque_ramp(uint16_t ramp_rate) {
-    motor_send_command(CMD_SET_TRQ_RMP, ramp_rate);
+    /* CMD_SET_TRQ_RMP was "TR" until 2026-09-06 - the MCB's thermal threshold,
+     * range 4..75. Every torque-ramp change therefore moved the motor's
+     * temperature trip point and never touched the torque ramp at all. It now
+     * addresses SR, the real Torque Ramp, clamped to the MCB's own range. */
+    motor_send_param_checked(CMD_SET_TRQ_RMP, (int32_t)ramp_rate,
+                             MCB_RANGE_TORQUE_RAMP_MIN, MCB_RANGE_TORQUE_RAMP_MAX,
+                             "torque_ramp");
 }
 
 void motor_set_profile(uint8_t profile) {
@@ -850,32 +934,74 @@ void motor_sync_settings(void) {
     // Send voltage PID parameters (CRITICAL: must be non-zero for motor to start!)
     // Safety: use factory defaults if stored values are zero
     //
-    // NOTE: Service menu shows SP (Kprop) and SI (Kint) as PID params.
-    // Current implementation uses VP/VI commands which work correctly.
-    // MCB may accept both parameter sets or map VP/VI → SP/SI internally.
-    // No change needed - motor operates correctly with current settings.
-    uint16_t vkp = s->motor.voltage_kp ? s->motor.voltage_kp : MOTOR_FACTORY_VOLTAGE_KP;
-    uint16_t vki = s->motor.voltage_ki ? s->motor.voltage_ki : MOTOR_FACTORY_VOLTAGE_KI;
-    if (!motor_send_command(CMD_SET_VKP, vkp)) sync_failures++;
-    delay_ms(5);
-    if (!motor_send_command(CMD_SET_VKI, vki)) sync_failures++;
-    delay_ms(5);
+    /* The voltage PID lives in PU (Kp) and IU (Ki), per the OEM service menu.
+     * This used to send VP/VI, which are absent from the MCB's parameter table
+     * and read back 0 - so the voltage PID was never actually being set, and
+     * the note that once stood here claiming otherwise was wrong. */
+    /* The voltage PI coefficients live in PU (Kp) and IU (Ki). This used to be
+     * sent to VP/VI, which are absent from the MCB's parameter table and read
+     * back 0 - so it never reached the controller, and the machine ran on
+     * whatever PU/IU held (measured: 1000 / 1000).
+     *
+     * The Voyager manual (p.22) documents the factory values as
+     * V kprop / V kint = 2000 / 9000, which is exactly what we store. Sending
+     * them restores the manufacturer's figures rather than inventing a tune,
+     * which is why this is enabled where the IR-comp write below is not. */
+    {
+        uint16_t vkp = s->motor.voltage_kp ? s->motor.voltage_kp : MOTOR_FACTORY_VOLTAGE_KP;
+        uint16_t vki = s->motor.voltage_ki ? s->motor.voltage_ki : MOTOR_FACTORY_VOLTAGE_KI;
+        if (!motor_send_param_checked(CMD_SET_VKP, (int32_t)vkp,
+                                      MCB_RANGE_VOLT_KP_MIN, MCB_RANGE_VOLT_KP_MAX,
+                                      "voltage_kp")) sync_failures++;
+        delay_ms(5);
+        if (!motor_send_param_checked(CMD_SET_VKI, (int32_t)vki,
+                                      MCB_RANGE_VOLT_KI_MIN, MCB_RANGE_VOLT_KI_MAX,
+                                      "voltage_ki")) sync_failures++;
+        delay_ms(5);
+    }
     HEARTBEAT_UPDATE_MOTOR();
-    uart_puts("  Voltage PID set (VP/VI)\r\n");
+    uart_puts("  Voltage PID set (PU/IU)\r\n");
 
-    // Send speed PID parameters
-    if (!motor_send_command(CMD_SET_KP, s->motor.speed_kprop)) sync_failures++;
+    /* Speed PI. These now address SP/SI - "KP"/"KI" are not MCB registers and
+     * the writes went nowhere. Settings are percent, the MCB is per-mille, so
+     * scale on the way out: 100 -> 1000 and 50 -> 500, which is exactly what
+     * the controller already holds, so this is a no-op against a machine at
+     * defaults rather than a silent retune. */
+    if (!motor_send_param_checked(CMD_SET_KP,
+                                  (int32_t)s->motor.speed_kprop * MCB_SPEED_PI_SCALE,
+                                  MCB_RANGE_SPEED_PI_MIN, MCB_RANGE_SPEED_PI_MAX,
+                                  "speed_kprop")) sync_failures++;
     delay_ms(5);
-    if (!motor_send_command(CMD_SET_KI, s->motor.speed_kint)) sync_failures++;
+    if (!motor_send_param_checked(CMD_SET_KI,
+                                  (int32_t)s->motor.speed_kint * MCB_SPEED_PI_SCALE,
+                                  MCB_RANGE_SPEED_PI_MIN, MCB_RANGE_SPEED_PI_MAX,
+                                  "speed_kint")) sync_failures++;
     delay_ms(5);
     HEARTBEAT_UPDATE_MOTOR();  // Prevent watchdog during long init
-    uart_puts("  Speed PID set\r\n");
+    uart_puts("  Speed PI set (SP/SI)\r\n");
 
     // Send advance and pulse max (safety: use factory defaults if zero)
     uint16_t adv_max = s->motor.advance_max ? s->motor.advance_max : MOTOR_FACTORY_ADV_MAX;
     if (!motor_send_command(CMD_SET_ADV_MAX, adv_max)) sync_failures++;
     delay_ms(5);
-    if (!motor_send_command(CMD_SET_PULSE_MAX, s->motor.pulse_max)) sync_failures++;
+    /* Temperature threshold for current reduction. The manual gives 60 degC;
+     * ours was driven to 75 - the maximum the MCB accepts - because until
+     * 2026-09-06 the torque-ramp setting was written to this register. Restore
+     * the documented value so thermal current reduction engages when the
+     * manufacturer intended rather than 15 degC late. */
+    if (!motor_send_param_checked(0x5452 /* TR */, MOTOR_FACTORY_TEMP_THRESHOLD,
+                                  MCB_RANGE_TEMP_THRESH_MIN, MCB_RANGE_TEMP_THRESH_MAX,
+                                  "temp_threshold")) sync_failures++;
+    delay_ms(5);
+
+    /* Pulse Max is SU (10..100). This used to go to PU - the voltage Kp
+     * register, minimum 100 - so pulse_max=185 was written to the wrong place
+     * and the real Pulse Max was never set. The stored default of 185 was
+     * itself read back through that wrong mapping, so it is out of range here
+     * and will clamp; the sync log now says so. */
+    if (!motor_send_param_checked(CMD_SET_PULSE_MAX, (int32_t)s->motor.pulse_max,
+                                  MCB_RANGE_PULSE_MAX_MIN, MCB_RANGE_PULSE_MAX_MAX,
+                                  "pulse_max")) sync_failures++;
     delay_ms(5);
     HEARTBEAT_UPDATE_MOTOR();  // Prevent watchdog during long init
     uart_puts("  Adv/Pulse max set\r\n");
