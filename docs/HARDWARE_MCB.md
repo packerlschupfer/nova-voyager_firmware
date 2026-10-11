@@ -55,7 +55,11 @@ legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
      Straight-down macro, SIP1 centred, R56/R57 both in frame, the square pad
      clearly square. Oblique lighting makes the plated-hole annulus read.
      Caption when it lands: "The unpopulated 4-pin SWD header. Pin 1 is the
-     square pad." -->
+     square pad."
+     Already tried and rejected: cropping this out of the 2026-09-06 bench
+     overviews. At that magnification the four plated holes are ~20 px across
+     and all four read identically - the square pad does not resolve, which is
+     the single thing this slot exists for. It needs a dedicated macro. -->
 
 **Pin 1 (square pad) → pin 4, as wired on this board:**
 
@@ -72,7 +76,14 @@ legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
      pin 1, black to pin 4) would make the convention obvious without reading
      any caption. This photo exists to settle "pin 1 is 3V3, not GND" - a wrong
      read there puts 3V3 into SWCLK - so it must actually SHOW that, or stay
-     absent. Do not substitute a crop that merely implies it. -->
+     absent. Do not substitute a crop that merely implies it.
+     Status: a candidate exists (2026-10-10 bench shot, header fitted to SIP1,
+     leads red/yellow/white/black running from the R55/V1 end toward the board
+     edge). It is held, not rejected: the fitted housing covers the pad
+     markings, so the photo shows lead order but cannot show which hole is
+     pin 1, and whether red is the 3V3 lead is this bench's convention rather
+     than something the photo establishes. Land it once that is confirmed at
+     the probe end, with a caption that says which end carries 3V3. -->
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
 reset flow is ever needed, tack a wire directly to the pad. For normal flashing
@@ -217,6 +228,17 @@ end of the link. The two documents assume you keep the barrier intact.
 | **`+3V3` and `GND` test pads** | Separate silkscreened single-pad test points elsewhere on the board — convenient for scope reference without hunting on the SIP1 header. |
 | **BOOT0** | GD32F303 package pin 60. Not routed to any accessible header. Only matters if you need to force the ROM UART bootloader; the SWD path at `SIP1` is simpler for every normal workflow. |
 | **24 V main input** | High-current side of the board. Nothing on this doc interacts with it; stay on the logic side. |
+
+Nothing in this document touches the power side. The photo below is here only
+so you can tell at a glance which face of the board you are looking at:
+
+![MCB solder side, power stage](photos/mcb-pcb-bottom.jpg)
+
+*Solder side of the MCB — the face the power devices mount on. Twelve TO-220
+packages in two rows of six; three TO-247 packages at right, silkscreened
+`VT1`, `VT2` and `VD2`; one further TO-220 beside the bridge rectifier at
+lower right. Every tab carries thermal compound and faces the aluminium plate
+the board bolts to. The bottom edge of the board is just outside the frame.*
 
 ---
 
