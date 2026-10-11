@@ -179,10 +179,11 @@ pin 1  3  5  7  9      ← odd row
 pin 2  4  6  8  10     ← even row (notch next to pin 6)
 ```
 
-<!-- PHOTO WANTED: photos/mcb-headers.jpg
-     Close-up of the HMI 10-pin box header and the 5-pin RPS header side by
-     side, notch position legible. Both appear in mcb-pcb-top.jpg above, but
-     too small to count pins or see the notch. -->
+![The MCB's two front-edge headers](photos/mcb-headers.jpg)
+
+*`P1` (5-pin, RPS) and `P2` (10-pin, HMI) on the board's front edge. The
+polarising key on `P2` is the block moulded into the lower wall of the
+shroud, centred on the long side.*
 
 **Pin 4** carries the MCB→HMI TX line. That is also the tap point used when
 sniffing the link with a logic analyzer.
@@ -197,10 +198,18 @@ sniffing the link with a logic analyzer.
 > isolation barrier the π140U31 is there to provide and can destroy the
 > isolator if there is any potential difference between the two sides.
 
-<!-- PHOTO WANTED: photos/mcb-isolator.jpg
-     Macro of the pi140U31 at an oblique angle so the barrier line between the
-     side-1 and side-2 silkscreens reads, with both ground labels (GND, G2) in
-     frame. A crop from the overview will not carry "this is the barrier". -->
+![The isolator, with the G2 and 5V2 test pads](photos/mcb-isolator.jpg)
+
+*`P2`, the HMI header, is at lower left. Its lines run right through
+`R41`–`R44` into the left-hand pins of the 16-pin isolator; the right-hand
+pins carry on to the MCU side. `G2` and `5V2` are the isolated side's ground
+and supply test pads, each with its own silkscreen label and its own plated
+pad — those are what you clip a probe reference to.*
+
+There is **no silkscreened barrier line** to follow, and the isolator's own
+top marking does not read in the photo. The landmarks you can actually use
+are the `G2` and `5V2` labels, and the package itself sitting between
+`R41`–`R44` and the MCU side.
 
 When probing with a scope or logic analyzer:
 
