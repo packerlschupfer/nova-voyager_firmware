@@ -115,6 +115,18 @@ unlocked firmware onto them**. The RDP trap only exists on RDP-set OEM firmware.
 > an unlocked, perfectly healthy board. Unlocking removes the double-fault, not
 > this. Take data over the serial console while anything is spinning, and keep
 > SWD for a stopped machine.
+>
+> The same rule applies with more force at the **MCB** end, and for a different
+> reason. Halting the HMI breaks the panel-stop path; halting the MCB stops the
+> core that is generating the PWM, leaving the gate drive in whatever state the
+> timer outputs held at that instant — a stuck duty cycle, or both halves of a
+> bridge enabled. So the MCB failure mode is potentially a damaged board as well
+> as an uncontrolled spindle.
+>
+> Flagged honestly: that second paragraph is *reasoning* about how gate drivers
+> behave when a core stops mid-PWM, not a measurement. Nobody here has halted a
+> running MCB to find out, and this is not an invitation to. The HMI hazard
+> above is the one that was observed.
 
 ---
 
