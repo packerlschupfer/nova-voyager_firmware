@@ -13,6 +13,7 @@
 |----------|---------------|
 | [`../README.md`](../README.md) | Features, LCD layout, F-keys, architecture, safety |
 | [`HARDWARE_SETUP.md`](HARDWARE_SETUP.md) | ST-Link wiring, Pi flash topology, serial console, logic analyzer |
+| [`HARDWARE_MCB.md`](HARDWARE_MCB.md) | The motor control board: GD32 part, SWD header `SIP1`, isolated UART link, ground topology |
 | [`MOTOR_PROTOCOL.md`](MOTOR_PROTOCOL.md) | MCB UART protocol, command table, GF flags, fault codes, register dump |
 | [`EEPROM_MAP.md`](EEPROM_MAP.md) | AT24C02 layout, OEM fields, custom block at 0xB0 |
 | [`CGRAM_IMPLEMENTATION_GUIDE.md`](CGRAM_IMPLEMENTATION_GUIDE.md) | ST7920 16x16 CGRAM protocol (confirmed working) |
