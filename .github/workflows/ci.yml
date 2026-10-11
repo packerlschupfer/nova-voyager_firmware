@@ -31,6 +31,17 @@ jobs:
         # together with the platform/package pins in platformio.ini.
         run: pip install platformio==6.1.19
 
+      # Install the project's platform and packages BEFORE verifying the pins.
+      # check-pins.sh inspects what is installed, so on a cold cache it reported
+      # "framework-stm32cubef1 not found in env" and failed - which is exactly
+      # what happened on 2026-10-11, five weeks after the previous run, because
+      # GitHub evicts caches unused for 7 days. The check had only ever passed
+      # because the cache was warm and the build step had installed them on some
+      # earlier run. Verifying pins against packages that are not there yet is
+      # not a check; make the install explicit and ordered.
+      - name: Install project packages
+        run: pio pkg install -e nova_voyager
+
       # Build all four user-facing product envs. nova_voyager extends release_120
       # (120 MHz product); games adds the arcade content; demo is the read-only
       # variant; debug builds with extra logging.
