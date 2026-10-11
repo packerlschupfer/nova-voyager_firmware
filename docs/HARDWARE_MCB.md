@@ -53,9 +53,10 @@ legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
 
 ![SIP1, the unpopulated SWD header](photos/mcb-sip1-detail.jpg)
 
-*`SIP1` with no header fitted. **Pin 1 is the square pad**, at the end nearest
-the `+` mark and `V1` and furthest from the board corner. `R56` and `R57`
-beside the footprint are the SWDIO/SWCLK series resistors.*
+*`SIP1` with no header fitted. **Pin 1 is the square pad** — the left-hand
+hole of the four, nearest the `+` mark and `V1` and furthest from the board
+corner. `R56` and `R57` above the footprint are the SWDIO/SWCLK series
+resistors.*
 
 **Pin 1 (square pad) → pin 4.** Continuity-checked against the `+3V3` and
 `GND` test pads:
@@ -71,13 +72,15 @@ beside the footprint are the SWDIO/SWCLK series resistors.*
 
 *A 4-pin header fitted to `SIP1` with a probe harness attached. Red sits on
 pin 1 (3V3) at the `R55`/`V1` end — the square-pad end carrying the `+` mark —
-then yellow (SWDIO), white (SWCLK), black (GND). The thin yellow wire crossing
-the board at upper left is an unrelated UART tap.*
+then yellow (SWDIO), white (SWCLK), black (GND). The separate yellow wire
+crossing the board is the NRST tap, soldered straight to package pin 7 on the
+right-hand pin row of the GD32.*
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
-reset flow is ever needed, tack a wire directly to the pad. For normal flashing
-and interactive debugging, hot-attach to the running chip works fine (unless
-RDP is set — see below).
+reset flow is ever needed, tack a wire directly to the pin, which is what the
+yellow wire in the photo above does. For normal flashing and interactive
+debugging, hot-attach to the running chip works fine (unless RDP is set — see
+below).
 
 The header footprint is 2.54 mm, so **JST-XH** housings fit (B4B-XH-A vertical
 or S4B-XH-A side-entry). JST-PH (2.0 mm) does **not** fit.
