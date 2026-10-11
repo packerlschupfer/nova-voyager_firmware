@@ -46,8 +46,10 @@ resistors.
 
 ![MCB top side, SIP1 and neighbouring headers visible](photos/mcb-pcb-top.jpg)
 
-*MCB overview with `SIP1` (SWD), the HMI 10-pin header and the RPS 5-pin header
-all visible along the front edge.*
+*MCB top side. `SIP1` is the 4-hole footprint at lower right, silkscreen-labelled,
+just below the two quad-flat packages. The HMI 10-pin box header and the 5-pin
+RPS header are the pair at lower left. `G2`, `+3V3` and `GND` silkscreens are
+legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
 
 <!-- PHOTO WANTED: photos/mcb-sip1-detail.jpg
      Straight-down macro, SIP1 centred, R56/R57 both in frame, the square pad
