@@ -49,9 +49,11 @@ resistors.
 *MCB overview with `SIP1` (SWD), the HMI 10-pin header and the RPS 5-pin header
 all visible along the front edge.*
 
-![SIP1 detail with R56/R57](photos/mcb-sip1-detail.jpg)
-
-*The unpopulated 4-pin SWD header. Pin 1 is the **square** pad.*
+<!-- PHOTO WANTED: photos/mcb-sip1-detail.jpg
+     Straight-down macro, SIP1 centred, R56/R57 both in frame, the square pad
+     clearly square. Oblique lighting makes the plated-hole annulus read.
+     Caption when it lands: "The unpopulated 4-pin SWD header. Pin 1 is the
+     square pad." -->
 
 **Pin 1 (square pad) → pin 4, as wired on this board:**
 
@@ -62,11 +64,13 @@ all visible along the front edge.*
 | 3        | SWCLK | PA14 (package pin 49) |
 | 4        | GND   | —        |
 
-![SIP1 wired for programming](photos/mcb-sip1-wired.jpg)
-
-*Probe attached. Note the orientation — the easy way to get this backwards is
-to assume pin 1 is on the GND side like many 4-pin SWD headers; on this board
-it is the 3V3 side.*
+<!-- PHOTO WANTED: photos/mcb-sip1-wired.jpg  (highest value of the set)
+     Probe leads in all four holes, straight-down macro, the square-pad pin
+     visibly carrying the lead that goes to 3V3. Colour-coded leads (red to
+     pin 1, black to pin 4) would make the convention obvious without reading
+     any caption. This photo exists to settle "pin 1 is 3V3, not GND" - a wrong
+     read there puts 3V3 into SWCLK - so it must actually SHOW that, or stay
+     absent. Do not substitute a crop that merely implies it. -->
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
 reset flow is ever needed, tack a wire directly to the pad. For normal flashing
@@ -170,10 +174,10 @@ pin 1  3  5  7  9      ← odd row
 pin 2  4  6  8  10     ← even row (notch next to pin 6)
 ```
 
-![HMI header and RPS header, MCB front edge](photos/mcb-headers.jpg)
-
-*The HMI 10-pin box header and the 5-pin RPS header side by side. Notch
-visible on the HMI header.*
+<!-- PHOTO WANTED: photos/mcb-headers.jpg
+     Close-up of the HMI 10-pin box header and the 5-pin RPS header side by
+     side, notch position legible. Both appear in mcb-pcb-top.jpg above, but
+     too small to count pins or see the notch. -->
 
 **Pin 4** carries the MCB→HMI TX line. That is also the tap point used when
 sniffing the link with a logic analyzer.
@@ -188,10 +192,10 @@ sniffing the link with a logic analyzer.
 > isolation barrier the π140U31 is there to provide and can destroy the
 > isolator if there is any potential difference between the two sides.
 
-![π140U31 and the GND/G2 split](photos/mcb-isolator.jpg)
-
-*The π140U31 and the ground split. The barrier runs across the body of the
-isolator; left-side pads reference `GND`, right-side pads reference `G2`.*
+<!-- PHOTO WANTED: photos/mcb-isolator.jpg
+     Macro of the pi140U31 at an oblique angle so the barrier line between the
+     side-1 and side-2 silkscreens reads, with both ground labels (GND, G2) in
+     frame. A crop from the overview will not carry "this is the barrier". -->
 
 When probing with a scope or logic analyzer:
 
