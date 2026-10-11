@@ -51,15 +51,11 @@ just below the two quad-flat packages. The HMI 10-pin box header and the 5-pin
 RPS header are the pair at lower left. `G2`, `+3V3` and `GND` silkscreens are
 legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
 
-<!-- PHOTO WANTED: photos/mcb-sip1-detail.jpg
-     Straight-down macro, SIP1 centred, R56/R57 both in frame, the square pad
-     clearly square. Oblique lighting makes the plated-hole annulus read.
-     Caption when it lands: "The unpopulated 4-pin SWD header. Pin 1 is the
-     square pad."
-     Already tried and rejected: cropping this out of the 2026-09-06 bench
-     overviews. At that magnification the four plated holes are ~20 px across
-     and all four read identically - the square pad does not resolve, which is
-     the single thing this slot exists for. It needs a dedicated macro. -->
+![SIP1, the unpopulated SWD header](photos/mcb-sip1-detail.jpg)
+
+*`SIP1` with no header fitted. **Pin 1 is the square pad**, at the end nearest
+the `+` mark and `V1` and furthest from the board corner. `R56` and `R57`
+beside the footprint are the SWDIO/SWCLK series resistors.*
 
 **Pin 1 (square pad) → pin 4, as wired on this board:**
 
@@ -70,20 +66,12 @@ legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
 | 3        | SWCLK | PA14 (package pin 49) |
 | 4        | GND   | —        |
 
-<!-- PHOTO WANTED: photos/mcb-sip1-wired.jpg  (highest value of the set)
-     Probe leads in all four holes, straight-down macro, the square-pad pin
-     visibly carrying the lead that goes to 3V3. Colour-coded leads (red to
-     pin 1, black to pin 4) would make the convention obvious without reading
-     any caption. This photo exists to settle "pin 1 is 3V3, not GND" - a wrong
-     read there puts 3V3 into SWCLK - so it must actually SHOW that, or stay
-     absent. Do not substitute a crop that merely implies it.
-     Status: a candidate exists (2026-10-10 bench shot, header fitted to SIP1,
-     leads red/yellow/white/black running from the R55/V1 end toward the board
-     edge). It is held, not rejected: the fitted housing covers the pad
-     markings, so the photo shows lead order but cannot show which hole is
-     pin 1, and whether red is the 3V3 lead is this bench's convention rather
-     than something the photo establishes. Land it once that is confirmed at
-     the probe end, with a caption that says which end carries 3V3. -->
+<!-- PHOTO WANTED: photos/mcb-sip1-wired.jpg
+     Probe leads in all four holes, colour-coded, with the square-pad end
+     visibly carrying the 3V3 lead. This slot exists to settle "pin 1 is 3V3,
+     not GND" - a wrong read there puts 3V3 into SWCLK - so it must show that,
+     not imply it. A candidate exists but the fitted housing covers the pad
+     markings, and whether its red lead is 3V3 is unconfirmed. -->
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
 reset flow is ever needed, tack a wire directly to the pad. For normal flashing
@@ -238,7 +226,7 @@ so you can tell at a glance which face of the board you are looking at:
 packages in two rows of six; three TO-247 packages at right, silkscreened
 `VT1`, `VT2` and `VD2`; one further TO-220 beside the bridge rectifier at
 lower right. Every tab carries thermal compound and faces the aluminium plate
-the board bolts to. The bottom edge of the board is just outside the frame.*
+the board bolts to.*
 
 ---
 
