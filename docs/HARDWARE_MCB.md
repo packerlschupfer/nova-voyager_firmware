@@ -46,17 +46,13 @@ resistors.
 
 ![MCB top side, SIP1 and neighbouring headers visible](photos/mcb-pcb-top.jpg)
 
-*MCB top side. `SIP1` is the 4-hole footprint at lower right, silkscreen-labelled,
-just below the two quad-flat packages. The HMI 10-pin box header and the 5-pin
-RPS header are the pair at lower left. `G2`, `+3V3` and `GND` silkscreens are
-legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
+*MCB top side. `SIP1` is the 4-hole footprint at lower right; the HMI 10-pin
+and 5-pin RPS headers are the pair at lower left.*
 
 ![SIP1, the unpopulated SWD header](photos/mcb-sip1-detail.jpg)
 
-*`SIP1` with no header fitted. **Pin 1 is the square pad** — the left-hand
-hole of the four, nearest the `+` mark and `V1` and furthest from the board
-corner. `R56` and `R57` above the footprint are the SWDIO/SWCLK series
-resistors.*
+*`SIP1`, unpopulated. **Pin 1 is the square pad** — the left-hand hole, by
+the `+` mark. `R56` and `R57` are the SWDIO/SWCLK series resistors.*
 
 **Pin 1 (square pad) → pin 4.** Continuity-checked against the `+3V3` and
 `GND` test pads:
@@ -70,11 +66,9 @@ resistors.*
 
 ![SIP1 with a probe harness fitted](photos/mcb-sip1-wired.jpg)
 
-*A 4-pin header fitted to `SIP1` with a probe harness attached. Red sits on
-pin 1 (3V3) at the `R55`/`V1` end — the square-pad end carrying the `+` mark —
-then yellow (SWDIO), white (SWCLK), black (GND). The separate yellow wire
-crossing the board is the NRST tap, soldered straight to package pin 7 on the
-right-hand pin row of the GD32.*
+*`SIP1` with a probe harness fitted. Red is on pin 1 (3V3), the `+`-marked
+end, then yellow (SWDIO), white (SWCLK), black (GND). The separate yellow wire
+is the NRST tap, soldered to GD32 package pin 7.*
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
 reset flow is ever needed, tack a wire directly to the pin, which is what the
@@ -181,9 +175,8 @@ pin 2  4  6  8  10     ← even row (notch next to pin 6)
 
 ![The MCB's two front-edge headers](photos/mcb-headers.jpg)
 
-*`P1` (5-pin, RPS) and `P2` (10-pin, HMI) on the board's front edge. The
-polarising key on `P2` is the block moulded into the lower wall of the
-shroud, centred on the long side.*
+*`P1` (5-pin, RPS) and `P2` (10-pin, HMI) on the front edge. The polarising
+key on `P2` is moulded into the lower shroud wall.*
 
 **Pin 4** carries the MCB→HMI TX line. That is also the tap point used when
 sniffing the link with a logic analyzer.
@@ -200,16 +193,9 @@ sniffing the link with a logic analyzer.
 
 ![The isolator, with the G2 and 5V2 test pads](photos/mcb-isolator.jpg)
 
-*`P2`, the HMI header, is at lower left. Its lines run right through
-`R41`–`R44` into the left-hand pins of the 16-pin isolator; the right-hand
-pins carry on to the MCU side. `G2` and `5V2` are the isolated side's ground
-and supply test pads, each with its own silkscreen label and its own plated
-pad — those are what you clip a probe reference to.*
-
-There is **no silkscreened barrier line** to follow, and the isolator's own
-top marking does not read in the photo. The landmarks you can actually use
-are the `G2` and `5V2` labels, and the package itself sitting between
-`R41`–`R44` and the MCU side.
+*`P2`, the HMI header, is at lower left; its lines reach the isolator through
+`R41`–`R44`, and the far side of the package goes to the MCU. `G2` and `5V2`
+are the isolated side's ground and supply pads — reference probes there.*
 
 When probing with a scope or logic analyzer:
 
@@ -235,11 +221,9 @@ so you can tell at a glance which face of the board you are looking at:
 
 ![MCB solder side, power stage](photos/mcb-pcb-bottom.jpg)
 
-*Solder side of the MCB — the face the power devices mount on. Twelve TO-220
-packages in two rows of six; three TO-247 packages at right, silkscreened
-`VT1`, `VT2` and `VD2`; one further TO-220 beside the bridge rectifier at
-lower right. Every tab carries thermal compound and faces the aluminium plate
-the board bolts to.*
+*Solder side — the face the power devices mount on. Twelve TO-220 in two rows
+of six, three TO-247 (`VT1`, `VT2`, `VD2`), and a bridge rectifier at lower
+right. Every tab faces the aluminium plate the board bolts to.*
 
 ---
 
