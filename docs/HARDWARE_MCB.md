@@ -57,7 +57,8 @@ legible at full size, as is `P/N 55525 Rev 06-2022` bottom right.*
 the `+` mark and `V1` and furthest from the board corner. `R56` and `R57`
 beside the footprint are the SWDIO/SWCLK series resistors.*
 
-**Pin 1 (square pad) → pin 4, as wired on this board:**
+**Pin 1 (square pad) → pin 4.** Continuity-checked against the `+3V3` and
+`GND` test pads:
 
 | SIP1 pin | Net   | GD32 pin |
 |----------|-------|----------|
@@ -66,12 +67,12 @@ beside the footprint are the SWDIO/SWCLK series resistors.*
 | 3        | SWCLK | PA14 (package pin 49) |
 | 4        | GND   | —        |
 
-<!-- PHOTO WANTED: photos/mcb-sip1-wired.jpg
-     Probe leads in all four holes, colour-coded, with the square-pad end
-     visibly carrying the 3V3 lead. This slot exists to settle "pin 1 is 3V3,
-     not GND" - a wrong read there puts 3V3 into SWCLK - so it must show that,
-     not imply it. A candidate exists but the fitted housing covers the pad
-     markings, and whether its red lead is 3V3 is unconfirmed. -->
+![SIP1 with a probe harness fitted](photos/mcb-sip1-wired.jpg)
+
+*A 4-pin header fitted to `SIP1` with a probe harness attached. Red sits on
+pin 1 (3V3) at the `R55`/`V1` end — the square-pad end carrying the `+` mark —
+then yellow (SWDIO), white (SWCLK), black (GND). The thin yellow wire crossing
+the board at upper left is an unrelated UART tap.*
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
 reset flow is ever needed, tack a wire directly to the pad. For normal flashing
