@@ -472,6 +472,16 @@ static void prime_baseline_at(uint8_t baseline_load) {
     filter_initialized = false;
 }
 
+/* Feed a sample with the low-load detector ENABLED. No motor_load_motor_started
+ * here on purpose: that sets the inrush grace, which gates low-load off. */
+static bool feed_lowload(uint8_t raw, uint16_t cv, uint8_t low_thr) {
+    motor_load_update(raw, cv, 1000, true);
+    return jam_load_update(true /* running */, true /* jam_en */,
+                           true /* spike_en */, 95 /* spike_thr */,
+                           0 /* step disabled */,
+                           true /* low-load enabled */, low_thr);
+}
+
 /* Feed a raw KR sample then poll jam_load_update. Step + low-load disabled
  * so legacy spike/sustained semantics remain testable in isolation. */
 static bool feed_load(uint8_t raw, bool is_running, bool jam_en,
@@ -480,6 +490,41 @@ static bool feed_load(uint8_t raw, bool is_running, bool jam_en,
     return jam_load_update(is_running, jam_en, spike_en, spike_thr,
                            0 /* step disabled */,
                            false /* low-load disabled */, 0);
+}
+
+/* The 2026-10-13 machine finding: a start at SV=500 reports CV=0 for the whole
+ * run while the spindle turns and KR reads 11-14%. The low-load detector read
+ * that as a snapped belt and emergency-stopped a cut that was fine. A detector
+ * may not treat "this run never produced a speed reading" as physical evidence
+ * that the spindle has stopped. */
+void test_low_load_holds_off_until_cv_has_read_something(void) {
+    /* CV never rises above JAM_CV_VALID_RPM. Far more than the 18-sample
+     * debounce, with KR below the low-load threshold the whole time. */
+    for (int i = 0; i < 40; i++) {
+        bool jammed = feed_lowload(12, 0 /* CV */, 15);
+        TEST_ASSERT_FALSE(jammed);
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+    TEST_ASSERT_FALSE(jam_cv_feedback_seen());
+}
+
+void test_low_load_trips_once_cv_has_been_valid(void) {
+    /* The spindle comes up and CV reads properly ... */
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT_FALSE(feed_lowload(12, 1000, 15));
+    }
+    TEST_ASSERT_TRUE(jam_cv_feedback_seen());
+
+    /* ... then it stops turning with no load on it. That is the real belt
+     * break this detector exists for, and it must still fire. */
+    bool jammed = false;
+    for (int i = 0; i < JAM_LOW_LOAD_DEBOUNCE && !jammed; i++) {
+        jammed = feed_lowload(12, 0, 15);
+    }
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOW_LOAD, jam_get_status()->type);
+    TEST_ASSERT_TRUE(emergency_stop_called);
 }
 
 /* AUDIT FIX (LOW, jam.c:417): a spike used to queue TWO events — the
@@ -618,6 +663,18 @@ void test_step_at_high_load_trips_without_droop(void) {
 
 /* The OEM detector required both samples to be non-zero. A single KR=0 from
  * the MCB mid-cut otherwise reads as a full-load step on the sample after it. */
+void test_droop_holds_off_until_cv_has_read_something(void) {
+    /* CV=0 against SV=1000 satisfies cv + tol < sv trivially, and the load is
+     * above JAM_GRAB_MIN_LOAD - so without the gate this is an instant "grab"
+     * on every cut of a run whose CV never came up. */
+    for (int i = 0; i < 10; i++) {
+        bool jammed = feed_step(30, 0 /* CV */, 27);
+        TEST_ASSERT_FALSE(jammed);
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
 void test_step_ignores_dropout_sample(void) {
     prime_baseline_at(10);
     /* Climb to a high steady load in increments below the step threshold, so
@@ -762,6 +819,11 @@ int main(void) {
     RUN_TEST(test_step_cancels_when_load_collapses);
     RUN_TEST(test_step_threshold_zero_disables_detector);
     RUN_TEST(test_spike_trips_with_unarmed_baseline);
+
+    /* CV credibility */
+    RUN_TEST(test_low_load_holds_off_until_cv_has_read_something);
+    RUN_TEST(test_low_load_trips_once_cv_has_been_valid);
+    RUN_TEST(test_droop_holds_off_until_cv_has_read_something);
 
     /* Spike disabled */
     RUN_TEST(test_load_spike_disabled_no_detection);

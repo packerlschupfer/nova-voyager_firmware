@@ -31,6 +31,24 @@
 /* Smallest threshold that can mean anything as a trip point. */
 #define JAM_SPIKE_MIN_THRESH        20
 #define JAM_LOW_LOAD_CV_THRESHOLD   25      // (d) CV below this counts as "stopped"
+/* CV must prove itself once per run before any detector may read "CV is low"
+ * as "the spindle is not turning".
+ *
+ * Measured 2026-10-13, and the cause is NOT yet known. A start at SV=500 on
+ * this machine leaves CV reading 0 for the whole run while the spindle turns;
+ * starts at 50, 600, 610 and 2000 all report CV correctly, and once running,
+ * the speed can be wound anywhere down to 50 with CV tracking. So it is not a
+ * low-speed limit, not the spin-up grace, and not a regression of ours - the
+ * pre-2026-10-13 build behaves identically. Only the value 500 reproduces it.
+ *
+ * This gate does not depend on knowing why. Two detectors treat a low CV as
+ * physical evidence: low-load reads it as a snapped belt, and the grab path's
+ * cv + tol < sv is trivially true at CV=0, so every cut above JAM_GRAB_MIN_LOAD
+ * would read as a grab. Neither can tell "the spindle stopped" from "this run
+ * never produced a speed reading", and the second is not a reason to
+ * emergency-stop a machine that is cutting. A belt that breaks after the
+ * spindle is up still trips: CV will have been valid by then. */
+#define JAM_CV_VALID_RPM            JAM_LOW_LOAD_CV_THRESHOLD
 #define JAM_LOW_LOAD_DEBOUNCE       18      // (d) consecutive low-load samples (~900 ms at 20 Hz)
 
 /* (c) qualifiers for the step detector.
@@ -82,6 +100,7 @@ static bool startup_complete = false;
 static TickType_t load_jam_start_time = 0;
 static bool load_jam_condition_active = false;
 static uint8_t low_load_count = 0;          // (d) consecutive-samples debounce
+static bool    cv_seen_valid = false;       // CV has read >= JAM_CV_VALID_RPM this run
 static uint8_t step_confirm = 0;            // (c) consecutive qualified samples
 static bool    step_pending = false;        // (c) a step was seen, awaiting confirmation
 static uint8_t step_from = 0;               // (c) raw level the step jumped from
@@ -114,6 +133,7 @@ void jam_init(void) {
     load_jam_start_time = 0;
     load_jam_condition_active = false;
     low_load_count = 0;
+    cv_seen_valid = false;
     step_confirm = 0;
     step_pending = false;
     step_from = 0;
@@ -138,6 +158,7 @@ void jam_reset(void) {
     load_jam_start_time = 0;
     load_jam_condition_active = false;
     low_load_count = 0;
+    cv_seen_valid = false;
     step_confirm = 0;
     step_pending = false;
     step_from = 0;
@@ -173,6 +194,7 @@ void jam_motor_stopped(void) {
     startup_complete = false;
     motor_was_running = false;
     low_load_count = 0;
+    cv_seen_valid = false;
 
     // Only clear jam if acknowledged or no jam
     if (jam_status.acknowledged || jam_status.type == JAM_NONE) {
@@ -192,6 +214,10 @@ static uint8_t effective_sustained_thresh(uint8_t eff_spike) {
     return (eff_spike > JAM_SUSTAINED_MARGIN_PCT)
              ? (uint8_t)(eff_spike - JAM_SUSTAINED_MARGIN_PCT)
              : eff_spike;
+}
+
+bool jam_cv_feedback_seen(void) {
+    return cv_seen_valid;
 }
 
 void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out) {
@@ -458,8 +484,17 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
     // (d) Low-load detector (OEM-parity) — independent of jam_detect_enabled
     // because belt break / tool detach is a different failure class. Inrush
     // grace suppresses it so spin-up doesn't trip it (CV briefly 0).
-    if (low_load_detect_enabled && !in_inrush) {
-        uint16_t cv = g_state.current_rpm;
+    /* One CV reading for every detector below. motor_load holds the value
+     * task_motor published into g_state.current_rpm moments earlier (it is
+     * handed to motor_load_update() immediately before jam_update()), so this
+     * is the same number the low-load path used to read straight out of
+     * g_state - one source now, and the one the tests can drive. */
+    uint16_t cv_now = 0, sv_now = 0;
+    motor_load_get_speeds(&cv_now, &sv_now);
+    if (cv_now >= JAM_CV_VALID_RPM) cv_seen_valid = true;
+
+    if (low_load_detect_enabled && !in_inrush && cv_seen_valid) {
+        const uint16_t cv = cv_now;
         if (raw < low_load_threshold && cv < JAM_LOW_LOAD_CV_THRESHOLD) {
             if (++low_load_count >= JAM_LOW_LOAD_DEBOUNCE) {
                 trigger_jam(JAM_LOW_LOAD, 0);
@@ -506,11 +541,13 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
      * The dropout guard (prev > 0 && raw > 0) is the OEM's, from
      * MOTOR_PROTOCOL.md § Jam detector branch B: a single KR=0 from the MCB
      * mid-cut otherwise reads as a full-load step on the sample after it. */
-    uint16_t cv_now = 0, sv_now = 0;
-    motor_load_get_speeds(&cv_now, &sv_now);
-
     if (spike_detect_enabled && step_threshold >= JAM_STEP_MIN_THRESH && !in_inrush) {
-        const bool drooping = spindle_out_of_regulation(cv_now, sv_now) &&
+        /* Same gate, and here it matters more: with CV still at 0 during
+         * spin-up, cv + tol < sv is trivially true, so every cut that reached
+         * JAM_GRAB_MIN_LOAD would read as a grab. The raw-step path below does
+         * not use CV and still covers this window. */
+        const bool drooping = cv_seen_valid &&
+                              spindle_out_of_regulation(cv_now, sv_now) &&
                               (raw >= JAM_GRAB_MIN_LOAD);
 
         const bool step_seen = (raw > 0) && (motor_load_get_raw_prev() > 0) &&
