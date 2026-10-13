@@ -37,6 +37,33 @@ static bool     baseline_armed = false;
 static uint32_t spike_grace_end = 0;        // HAL_GetTick deadline; 0 = expired/none
 static uint32_t stable_since = 0;           // HAL_GetTick when CV first entered window
 static uint32_t stability_required_ms = 0;
+static uint16_t last_cv = 0;              // CV that came with the last sample
+static uint16_t last_sv = 0;              // SV that came with the last sample
+
+/* Jam flight recorder — see motor_load.h. Written once per poll from the motor
+ * task, read from the console task via motor_load_trace_get(). Both run under
+ * the scheduler and the buffer is only ever appended to, so a torn read shows
+ * one stale sample rather than corrupt state; that is cheaper than taking a
+ * lock on the 20 Hz hot path for a diagnostic. */
+static motor_load_trace_entry_t trace_buf[MLOAD_TRACE_LEN];
+static uint16_t trace_head = 0;      /* next slot to write */
+static uint16_t trace_count = 0;     /* 0..MLOAD_TRACE_LEN */
+static bool     trace_frozen = false;
+static uint32_t trace_frozen_tick = 0;
+
+static void trace_push(uint8_t kr, uint16_t cv, uint16_t sv) {
+    if (trace_frozen) return;
+    motor_load_trace_entry_t *e = &trace_buf[trace_head];
+    e->kr       = kr;
+    e->filtered = filtered_load;
+    e->flags    = (uint8_t)((baseline_armed ? MLOAD_TRACE_F_ARMED : 0) |
+                            (motor_load_in_spike_grace() ? MLOAD_TRACE_F_GRACE : 0));
+    e->baseline = load_baseline;
+    e->cv       = cv;
+    e->sv       = sv;
+    trace_head = (uint16_t)((trace_head + 1) % MLOAD_TRACE_LEN);
+    if (trace_count < MLOAD_TRACE_LEN) trace_count++;
+}
 
 static uint32_t grace_for_delta(uint16_t delta_rpm) {
     uint32_t g = (uint32_t)delta_rpm * MLOAD_SPIKE_GRACE_PER_RPM_MS;
@@ -49,6 +76,7 @@ static uint32_t stability_for_delta(uint16_t delta_rpm) {
 }
 
 void motor_load_init(void) {
+    motor_load_trace_reset();
     filtered_load = 0;
     filter_initialized = false;
     raw_last = 0;
@@ -62,6 +90,10 @@ void motor_load_init(void) {
 }
 
 void motor_load_motor_started(uint16_t target_rpm) {
+    /* A frozen trace is a captured trip waiting to be read. Restarting the
+     * spindle is the first thing an operator does after one, so keep it and
+     * leave the recorder blind until JAMTRACE has had it. */
+    if (!trace_frozen) motor_load_trace_reset();
     spike_grace_end = HAL_GetTick() + grace_for_delta(target_rpm);
     stability_required_ms = stability_for_delta(target_rpm);
     filter_initialized = false;
@@ -97,6 +129,8 @@ void motor_load_motor_speed_change(uint16_t old_target, uint16_t new_target) {
 }
 
 void motor_load_motor_stopped(void) {
+    last_cv = 0;
+    last_sv = 0;
     spike_grace_end = 0;
     stable_since = 0;
     stability_required_ms = 0;
@@ -110,6 +144,9 @@ void motor_load_motor_stopped(void) {
 }
 
 void motor_load_update(uint8_t raw_load, uint16_t cv, uint16_t sv, bool is_running) {
+    last_cv = cv;
+    last_sv = sv;
+
     if (!is_running) {
         filter_initialized = false;
         filtered_load = 0;
@@ -160,6 +197,8 @@ void motor_load_update(uint8_t raw_load, uint16_t cv, uint16_t sv, bool is_runni
             stable_since = 0;
         }
     }
+
+    trace_push(raw_load, cv, sv);
 }
 
 uint8_t motor_load_get_filtered(void) {
@@ -168,6 +207,15 @@ uint8_t motor_load_get_filtered(void) {
 
 uint8_t motor_load_get_raw(void) {
     return raw_last;
+}
+
+uint8_t motor_load_get_raw_prev(void) {
+    return prev_valid ? raw_prev : 0;
+}
+
+void motor_load_get_speeds(uint16_t *cv, uint16_t *sv) {
+    if (cv) *cv = last_cv;
+    if (sv) *sv = last_sv;
 }
 
 int8_t motor_load_get_step_delta(void) {
@@ -204,4 +252,41 @@ void motor_load_get_debug(motor_load_debug_t *out) {
     out->spike_grace_remaining_ms = (now < spike_grace_end) ? (spike_grace_end - now) : 0;
     out->stability_elapsed_ms = (stable_since > 0) ? (now - stable_since) : 0;
     out->stability_required_ms = stability_required_ms;
+}
+
+/*===========================================================================*/
+/* Load trace                                                                */
+/*===========================================================================*/
+
+void motor_load_trace_freeze(void) {
+    if (trace_frozen) return;        /* keep the first trip, not the last */
+    trace_frozen = true;
+    trace_frozen_tick = HAL_GetTick();
+}
+
+void motor_load_trace_reset(void) {
+    trace_head = 0;
+    trace_count = 0;
+    trace_frozen = false;
+    trace_frozen_tick = 0;
+}
+
+bool motor_load_trace_is_frozen(void) {
+    return trace_frozen;
+}
+
+uint32_t motor_load_trace_frozen_at(void) {
+    return trace_frozen_tick;
+}
+
+uint16_t motor_load_trace_count(void) {
+    return trace_count;
+}
+
+bool motor_load_trace_get(uint16_t i, motor_load_trace_entry_t *out) {
+    if (!out || i >= trace_count) return false;
+    /* Oldest-first: once the buffer has wrapped, trace_head is the oldest. */
+    uint16_t base = (trace_count == MLOAD_TRACE_LEN) ? trace_head : 0;
+    *out = trace_buf[(base + i) % MLOAD_TRACE_LEN];
+    return true;
 }

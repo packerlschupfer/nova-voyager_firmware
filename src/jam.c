@@ -17,21 +17,45 @@
 #include <stdbool.h>
 
 // Load-jam thresholds. Three-tier coverage:
-//   (a) absolute safety ceiling — always applies (defense in depth, no OEM)
-//   (b) baseline-relative delta — once motor_load has armed the baseline
-//   (c) OEM-style step delta on raw — instant, catches the bit biting
+//   (a) absolute ceiling, from the operator's Spike Thresh setting — immediate
+//       (defense in depth; the OEM has no equivalent)
+//   (b) the same ceiling less a fixed margin, held for JAM_LOAD_TIMEOUT_MS
+//   (c) OEM-style step delta on raw, qualified by spindle droop — instant,
+//       catches the bit grabbing
 //
 // And one no-load detector (OEM-parity):
 //   (d) low-load = KR<floor AND CV<25 RPM for 18 samples → belt break / detach
-#define JAM_LOAD_THRESHOLD          90      // (a) absolute sustained ceiling (%)
-#define JAM_LOAD_TIMEOUT_MS         5000    // (a)+(b) sustained timer
-#define JAM_SPIKE_DELTA_PCT         25      // (b) filtered > baseline + delta
-/* Smallest spike cap that can mean anything. Below the sustained-jam delta a
- * "spike" cap would trip before the sustained detector ever could. */
+#define JAM_LOAD_THRESHOLD          90      // (a) fallback ceiling when the setting is unusable
+#define JAM_LOAD_TIMEOUT_MS         5000    // (b) sustained timer
+#define JAM_SUSTAINED_MARGIN_PCT    15      // (b) sustained tier sits this far below (a)
+/* Smallest threshold that can mean anything as a trip point. */
 #define JAM_SPIKE_MIN_THRESH        20
-#define JAM_SUSTAINED_DELTA_PCT     30      // (b) sustained timer trigger
 #define JAM_LOW_LOAD_CV_THRESHOLD   25      // (d) CV below this counts as "stopped"
 #define JAM_LOW_LOAD_DEBOUNCE       18      // (d) consecutive low-load samples (~900 ms at 20 Hz)
+
+/* (c) qualifiers for the step detector.
+ *
+ * A step up in raw KR on its own is not a jam — it is what an interrupted cut
+ * does on every tooth. A 17 mm bi-metal hole saw in aluminium tripped the bare
+ * step test twice on 2026-10-13 at a step threshold of 27, with the spindle
+ * holding its commanded speed throughout and CL at 100%: the detector was
+ * reporting the tool working, not the tool grabbing.
+ *
+ * What distinguishes a grab is that the spindle starts LOSING: the controller
+ * can no longer hold the commanded speed. So a step now has to come with
+ * either a speed droop or a load already near the controller's ceiling, and it
+ * has to still be true on the next sample.
+ *
+ * JAM_DROOP_PCT is deliberately looser than motor_load's ±5% baseline window —
+ * that window decides when the load reading is trustworthy, this one decides
+ * when the spindle is in trouble, and normal regulation ripple must not count.
+ * The RPM floor keeps it meaningful at low commanded speeds, where 10% is a
+ * handful of RPM. */
+#define JAM_DROOP_PCT               10      // (c) CV this far below SV = out of regulation
+#define JAM_DROOP_MIN_RPM           60      // (c) ...but never less than this many RPM
+#define JAM_GRAB_MIN_LOAD           25      // (c) droop below this load is not a grab
+#define JAM_STEP_ABS_FLOOR          80      // (c) a step landing here trips on its own
+#define JAM_STEP_CONFIRM             2      // (c) consecutive qualified samples (~100 ms)
 
 // External UART function for logging
 extern void uart_puts(const char* s);
@@ -58,6 +82,9 @@ static bool startup_complete = false;
 static TickType_t load_jam_start_time = 0;
 static bool load_jam_condition_active = false;
 static uint8_t low_load_count = 0;          // (d) consecutive-samples debounce
+static uint8_t step_confirm = 0;            // (c) consecutive qualified samples
+static bool    step_pending = false;        // (c) a step was seen, awaiting confirmation
+static uint8_t step_from = 0;               // (c) raw level the step jumped from
 
 /*===========================================================================*/
 /* Public Functions                                                          */
@@ -87,6 +114,9 @@ void jam_init(void) {
     load_jam_start_time = 0;
     load_jam_condition_active = false;
     low_load_count = 0;
+    step_confirm = 0;
+    step_pending = false;
+    step_from = 0;
 }
 
 /**
@@ -108,6 +138,9 @@ void jam_reset(void) {
     load_jam_start_time = 0;
     load_jam_condition_active = false;
     low_load_count = 0;
+    step_confirm = 0;
+    step_pending = false;
+    step_from = 0;
 }
 
 /**
@@ -147,7 +180,46 @@ void jam_motor_stopped(void) {
     }
 }
 
+/* A threshold of 0 — or anything else unusable — would collapse the test to
+ * `filtered >= 0`, an emergency stop seconds into every drill. The setters
+ * clamp, but a stale EEPROM blob can still reach us: refuse it and fall back
+ * to the absolute ceiling rather than act on it. */
+static uint8_t effective_spike_thresh(uint8_t setting) {
+    return (setting >= JAM_SPIKE_MIN_THRESH) ? setting : JAM_LOAD_THRESHOLD;
+}
+
+static uint8_t effective_sustained_thresh(uint8_t eff_spike) {
+    return (eff_spike > JAM_SUSTAINED_MARGIN_PCT)
+             ? (uint8_t)(eff_spike - JAM_SUSTAINED_MARGIN_PCT)
+             : eff_spike;
+}
+
+void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out) {
+    if (!out) return;
+    out->spike_thresh     = effective_spike_thresh(spike_threshold);
+    out->sustained_thresh = effective_sustained_thresh(out->spike_thresh);
+    out->sustained_ms     = JAM_LOAD_TIMEOUT_MS;
+    out->droop_pct        = JAM_DROOP_PCT;
+    out->droop_min_rpm    = JAM_DROOP_MIN_RPM;
+    out->grab_min_load    = JAM_GRAB_MIN_LOAD;
+    out->step_abs_floor   = JAM_STEP_ABS_FLOOR;
+    out->step_confirm     = JAM_STEP_CONFIRM;
+}
+
+/* Is the spindle failing to hold the commanded speed? One-sided on purpose:
+ * CV above SV is an overshoot on a ramp-down, not a jam. */
+static bool spindle_out_of_regulation(uint16_t cv, uint16_t sv) {
+    if (sv == 0) return false;
+    uint16_t tol = (uint16_t)(((uint32_t)sv * JAM_DROOP_PCT) / 100);
+    if (tol < JAM_DROOP_MIN_RPM) tol = JAM_DROOP_MIN_RPM;
+    return (uint32_t)cv + tol < (uint32_t)sv;
+}
+
 static void trigger_jam(jam_type_t type, uint16_t duration) {
+    /* Hold the load trace for readout before anything else overwrites it —
+     * this is the only record of what the detectors actually saw. */
+    motor_load_trace_freeze();
+
     jam_status.type = type;
     jam_status.timestamp = HAL_GetTick();
     jam_status.duration_ms = duration;
@@ -373,12 +445,14 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
         return false;
     }
 
-    // Consume the load filter/baseline/grace state from motor_load.
+    /* Consume the load filter/grace state from motor_load.
+     *
+     * The learned baseline is deliberately NOT read here any more — see the
+     * absolute-threshold comment below. It still drives the display's cutting
+     * bar and motor_load's own stability logic. */
     uint8_t filtered = motor_load_get_filtered();
     uint8_t raw = motor_load_get_raw();
     int8_t step_delta = motor_load_get_step_delta();
-    uint8_t baseline = 0;
-    bool baseline_armed = motor_load_get_baseline(&baseline);
     bool in_inrush = motor_load_in_spike_grace();
 
     // (d) Low-load detector (OEM-parity) — independent of jam_detect_enabled
@@ -405,53 +479,113 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
         return false;
     }
 
-    // (c) OEM-style step delta on raw (instant) — fastest detector, catches
-    // the moment the bit catches before the EMA has a chance to react.
-    // Active during the learn phase too; inrush-grace gates it during
-    // motor spin-up. step_threshold == 0 disables this path.
-    if (spike_detect_enabled && step_threshold >= JAM_STEP_MIN_THRESH && !in_inrush
-        && step_delta > 0 && (uint8_t)step_delta >= step_threshold) {
-        trigger_jam(JAM_LOAD_STEP, 0);
-        load_jam_condition_active = false;
-        return true;
+    /* (c) Grab detection. Two ways in, both needing JAM_STEP_CONFIRM
+     * consecutive samples (~100 ms at the 50 ms running poll), both gated by
+     * inrush grace and both switched off by step_threshold == 0.
+     *
+     *   1. DROOP — the spindle is below the speed it was commanded while
+     *      pulling real load. At CL=100% a controller that cannot hold its
+     *      setpoint is a controller losing to the workpiece, and that is what
+     *      a jam IS. This does not care how the load got there.
+     *
+     *   2. SLAM — a raw step up that LANDS at or above JAM_STEP_ABS_FLOOR.
+     *      Faster than waiting for the speed to sag, for the violent case.
+     *
+     * What this replaces: a bare `step_delta >= step_threshold` with no
+     * qualification at all, which stopped this machine twice on 2026-10-13
+     * drilling aluminium with a 17 mm bi-metal hole saw — the teeth engaging
+     * stepped raw KR past the threshold while the spindle held its commanded
+     * speed and the MCB sat at CL=100%. An interrupted cut steps the load by
+     * design; that is not news about a jam.
+     *
+     * Note the two conditions are NOT required in the same sample. Load rises
+     * first and the speed sags after it — spindle inertia — so an AND of step
+     * and droop within one 50 ms poll would almost never be true, and the
+     * detector would quietly never fire.
+     *
+     * The dropout guard (prev > 0 && raw > 0) is the OEM's, from
+     * MOTOR_PROTOCOL.md § Jam detector branch B: a single KR=0 from the MCB
+     * mid-cut otherwise reads as a full-load step on the sample after it. */
+    uint16_t cv_now = 0, sv_now = 0;
+    motor_load_get_speeds(&cv_now, &sv_now);
+
+    if (spike_detect_enabled && step_threshold >= JAM_STEP_MIN_THRESH && !in_inrush) {
+        const bool drooping = spindle_out_of_regulation(cv_now, sv_now) &&
+                              (raw >= JAM_GRAB_MIN_LOAD);
+
+        const bool step_seen = (raw > 0) && (motor_load_get_raw_prev() > 0) &&
+                               (step_delta > 0) &&
+                               ((uint8_t)step_delta >= step_threshold) &&
+                               (raw >= JAM_STEP_ABS_FLOOR);
+
+        /* A slam has to STAY slammed. A load that collapses on the next sample
+         * is the bit breaking through, or a dropped reading — cancel, don't
+         * confirm. */
+        const bool still_up = step_pending &&
+                              (raw >= (uint16_t)step_from + step_threshold);
+
+        if (step_seen) {
+            step_pending = true;
+            step_from = motor_load_get_raw_prev();
+            step_confirm = 1;
+        } else if (drooping || still_up) {
+            if (++step_confirm >= JAM_STEP_CONFIRM) {
+                trigger_jam(JAM_LOAD_STEP, 0);
+                step_pending = false;
+                step_confirm = 0;
+                load_jam_condition_active = false;
+                return true;
+            }
+        } else {
+            step_pending = false;
+            step_confirm = 0;
+        }
+    } else {
+        step_pending = false;
+        step_confirm = 0;
     }
 
-    // (a)+(b) Filtered spike and sustained checks only run once the baseline
-    // has armed (motor at target speed for the full stability window). Before
-    // that, the EMA can legitimately climb past 90% during inrush on harder
-    // ramps (e.g. 2000->5000 observed at 91% filtered). During the learn
-    // phase, step (c) and low-load (d) handle safety.
-    if (!baseline_armed) {
-        load_jam_condition_active = false;
-        load_jam_start_time = 0;
-        return false;
-    }
+    /* (a)+(b) Absolute tiers. The operator's threshold is the authority.
+     *
+     * These used to be min(baseline + fixed delta, user setting), gated on the
+     * baseline having armed. Three things were wrong with that:
+     *
+     *  - the min() made Spike Thresh incapable of relaxing anything. With a
+     *    free-run baseline of ~11% the spike tier tripped at ~36% filtered
+     *    load whatever the setting said, so the 90% this machine was
+     *    configured with had no effect at all, and NO setting existed that
+     *    would let a hole saw or a large twist drill finish a cut;
+     *  - a fixed delta above a free-run baseline cannot tell tools apart. A
+     *    17 mm bi-metal hole saw legitimately runs tens of points above
+     *    free-run; a 3 mm twist drill barely moves. The delta was really
+     *    asking "is it cutting?", not "is it jammed". Note that the OEM has no
+     *    equivalent of this tier at all — its only load-jam detector is the
+     *    raw step delta (c), so dropping it does not drop below OEM
+     *    protection;
+     *  - gating the ABSOLUTE ceiling on baseline_armed was a hole. The
+     *    baseline only arms after CV sits within ±5% of SV for the whole
+     *    stability window, so feeding the bit during spin-up — or any run
+     *    where the speed never settles — left the ceiling disabled for the
+     *    entire cut.
+     *
+     * So: the ceiling is the operator's number, it applies whether or not the
+     * baseline has armed, and inrush grace is what keeps the EMA's spin-up
+     * climb (observed at 91% filtered on a 2000->5000 step) from tripping it.
+     *
+     * The sustained tier sits a fixed margin below the ceiling: a brief
+     * excursion to just under the limit is normal cutting, the same load held
+     * for JAM_LOAD_TIMEOUT_MS is not. */
+    uint8_t spike_thresh_eff = effective_spike_thresh(spike_threshold);
+    uint8_t sustained_thresh = effective_sustained_thresh(spike_thresh_eff);
 
-    // Effective thresholds — baseline-relative; user setting caps both.
-    uint16_t s_rel = (uint16_t)baseline + JAM_SUSTAINED_DELTA_PCT;
-    if (s_rel > JAM_LOAD_THRESHOLD) s_rel = JAM_LOAD_THRESHOLD;
-    uint8_t sustained_thresh = (uint8_t)s_rel;
-    uint16_t k_rel = (uint16_t)baseline + JAM_SPIKE_DELTA_PCT;
-    /* AUDIT FIX (MEDIUM, jam.c:412): spike_threshold is a CAP on the trip
-     * point, so a value of 0 — which the console setter used to accept —
-     * collapsed the test to `filtered >= 0` and tripped an emergency stop
-     * seconds into every drill. The setter now clamps to >= 20, but a stale
-     * EEPROM blob or a future caller could still hand us nonsense, and the
-     * consequence is an unexpected emergency stop mid-cut. Ignore an
-     * unusable cap rather than acting on it. */
-    if (spike_threshold >= JAM_SPIKE_MIN_THRESH && k_rel > spike_threshold) {
-        k_rel = spike_threshold;
-    }
-    uint8_t spike_thresh_eff = (uint8_t)k_rel;
-
-    if (spike_detect_enabled && filtered >= spike_thresh_eff && !in_inrush) {
+    if (spike_detect_enabled && !in_inrush && filtered >= spike_thresh_eff) {
         trigger_jam(JAM_LOAD_SPIKE, 0);
         load_jam_condition_active = false;
         return true;
     }
 
     TickType_t now = xTaskGetTickCount();
-    if (filtered >= sustained_thresh) {
+    if (!in_inrush && filtered >= sustained_thresh) {
         if (!load_jam_condition_active) {
             load_jam_condition_active = true;
             load_jam_start_time = now;

@@ -1403,7 +1403,12 @@ void settings_set_step_thresh(uint8_t value) {
      * both a settings floor of 20 and a JAM_SPIKE_MIN_THRESH defence in jam.c;
      * step had neither, and the menu's own step size of 5 already lands inside
      * the danger zone. Floor it at the smallest delta that can mean something. */
-    if (value < JAM_STEP_MIN_THRESH) value = JAM_STEP_MIN_THRESH;
+    /* FOLLOW-UP: that floor swallowed 0 as well, and 0 is the one value with a
+     * separate meaning — jam.c skips the detector entirely below
+     * JAM_STEP_MIN_THRESH, settings_pack.h's clamp exempts 0, and the menu
+     * entry says "0 disables". Dialling StepTh to 0 therefore asked for "off"
+     * and silently got 5: the most sensitive setting the detector has. */
+    if (value > 0 && value < JAM_STEP_MIN_THRESH) value = JAM_STEP_MIN_THRESH;
     if (value > 100) value = 100;
     if (current_settings.sensor.step_thresh != value) {
         current_settings.sensor.step_thresh = value;

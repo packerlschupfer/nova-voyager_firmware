@@ -452,13 +452,14 @@ void test_unacknowledged_jam_persists_through_update(void) {
 /*    jam_load_update() with load above spike_threshold → EVT_LOAD_SPIKE     */
 /*===========================================================================*/
 
-/* Spike + sustained checks only fire when motor_load has armed the baseline.
- * Each test that exercises those paths primes baseline=0 (so spike_thresh_eff
- * falls back to the user setting via the cap clause: min(0+25, spike_thr)
- * = 25 when spike_thr>25, but tests use spike_thr=95, so cap stays at 95...
- * actually min(25,95)=25, which would fire at any load >25. So we prime
- * baseline at 70 — then spike_thresh_eff = min(70+25, 95) = 95, matching
- * the legacy "absolute 95% threshold" intent of these tests). */
+/* Run the motor up to a settled, armed baseline and leave inrush grace
+ * expired, so a following feed_load()/feed_step() reaches the detectors.
+ *
+ * The learned baseline no longer sets any trip point — the absolute tiers come
+ * from the operator's Spike Thresh and the step tier from the raw delta — so
+ * the value primed here only matters to tests that care about the display-side
+ * baseline. It still has to be CALLED, because it is what gets the inrush
+ * grace out of the way. */
 static void prime_baseline_at(uint8_t baseline_load) {
     motor_load_motor_started(1000);   // grace=2000ms, stability_required=2000ms
     motor_load_update(baseline_load, 1000, 1000, true);  // first sample, in window
@@ -532,11 +533,147 @@ void test_load_jam_timer_resets_when_load_drops(void) {
     prime_baseline_at(70);
     feed_load(92, true, true, false, 95);
     tick_advance(3000);
-    feed_load(50, true, true, false, 95);
+    /* Several samples at the lower load, not one: jam.c tests the EMA, and the
+     * EMA needs a few 50 ms polls to walk down from 92 to below the sustained
+     * threshold. A single sample leaves filtered at 87 — still above the line,
+     * so the timer would legitimately keep running. */
+    for (int i = 0; i < 6; i++) {
+        feed_load(50, true, true, false, 95);
+    }
     tick_advance(3000);
     bool jammed = feed_load(92, true, true, false, 95);
     TEST_ASSERT_FALSE(jammed);
     TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+}
+
+/*===========================================================================*/
+/* 6b. Step detector — the qualifiers added 2026-10-13                        */
+/*===========================================================================*/
+
+/* Feed a raw KR sample with an explicit CV against a commanded 1000 RPM, and
+ * run the step detector (spike/sustained left enabled but far out of reach at
+ * spike_thr=95, so only the step path can fire). */
+static bool feed_step(uint8_t raw, uint16_t cv, uint8_t step_thr) {
+    motor_load_update(raw, cv, 1000, true);
+    return jam_load_update(true, true, true, 95, step_thr,
+                           false /* low-load disabled */, 0);
+}
+
+/* THE REGRESSION THIS WAS WRITTEN FOR: a 17 mm bi-metal hole saw in aluminium
+ * emergency-stopped the machine twice on 2026-10-13. The bare step test saw a
+ * +34 jump in raw KR as the teeth engaged and called it a jam, while the
+ * spindle was holding its commanded speed and the MCB was at CL=100%. Load
+ * stepping up IS what an interrupted cut does. */
+void test_step_without_droop_no_jam(void) {
+    prime_baseline_at(10);
+    feed_step(11, 1000, 27);
+    bool jammed = feed_step(45, 1000, 27);   /* +34 step, spindle on speed */
+    TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* A grab is a step the spindle cannot absorb: CV falls out of regulation. */
+void test_step_with_droop_trips_after_confirmation(void) {
+    prime_baseline_at(10);
+    feed_step(11, 1000, 27);
+
+    /* Qualified sample 1: the step plus a 300 RPM droop. Not yet a trip —
+     * one sample could be a sampling artefact. */
+    bool jammed = feed_step(45, 700, 27);
+    TEST_ASSERT_FALSE(jammed);
+
+    /* Still losing on the next sample → trip. */
+    jammed = feed_step(46, 700, 27);
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+    TEST_ASSERT_TRUE(emergency_stop_called);
+}
+
+/* The load rises before the speed sags — spindle inertia — so the step and the
+ * droop land in different samples. An AND of the two within one 50 ms poll
+ * would have meant the detector never fired on a real grab. */
+void test_grab_trips_when_droop_follows_the_step(void) {
+    prime_baseline_at(10);
+    feed_step(11, 1000, 27);
+    TEST_ASSERT_FALSE(feed_step(45, 1000, 27));   /* step, speed still held */
+    TEST_ASSERT_FALSE(feed_step(48, 1000, 27));   /* load up, still on speed */
+    TEST_ASSERT_FALSE(feed_step(52, 880, 27));    /* speed starts to go */
+    bool jammed = feed_step(55, 820, 27);         /* second drooping sample */
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+    TEST_ASSERT_TRUE(emergency_stop_called);
+}
+
+/* A step that lands near the controller's ceiling needs no droop. */
+void test_step_at_high_load_trips_without_droop(void) {
+    prime_baseline_at(10);
+    feed_step(50, 1000, 27);
+    bool jammed = feed_step(82, 1000, 27);   /* +32, lands above the floor */
+    TEST_ASSERT_FALSE(jammed);               /* one sample is not enough */
+    jammed = feed_step(83, 1000, 27);
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+}
+
+/* The OEM detector required both samples to be non-zero. A single KR=0 from
+ * the MCB mid-cut otherwise reads as a full-load step on the sample after it. */
+void test_step_ignores_dropout_sample(void) {
+    prime_baseline_at(10);
+    /* Climb to a high steady load in increments below the step threshold, so
+     * getting there is not itself a step. Spindle stays on speed throughout;
+     * 85 is above JAM_STEP_ABS_FLOOR, so the step path is live without droop. */
+    feed_step(30, 1000, 27);
+    feed_step(50, 1000, 27);
+    feed_step(70, 1000, 27);
+    feed_step(85, 1000, 27);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+
+    feed_step(0, 1000, 27);                       /* the MCB reports 0 once */
+    bool jammed = feed_step(85, 1000, 27);        /* +85 against a zero predecessor */
+    TEST_ASSERT_FALSE(jammed);
+    jammed = feed_step(85, 1000, 27);             /* and no confirmation either */
+    TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* A step that collapses on the next sample is not a grab — the bit broke
+ * through, or the MCB dropped a reading. Confirmation must cancel. */
+void test_step_cancels_when_load_collapses(void) {
+    prime_baseline_at(10);
+    feed_step(11, 1000, 27);
+    bool jammed = feed_step(45, 700, 27);    /* qualified step: armed */
+    TEST_ASSERT_FALSE(jammed);
+    jammed = feed_step(9, 700, 27);          /* load gone, spindle still slow */
+    TEST_ASSERT_FALSE(jammed);
+    jammed = feed_step(9, 700, 27);
+    TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+}
+
+/* step_thresh == 0 means off — jam.c, settings_pack.h and the menu entry all
+ * say so, and settings.c used to round it up to 5 (the most sensitive value
+ * the detector has) instead. */
+void test_step_threshold_zero_disables_detector(void) {
+    prime_baseline_at(10);
+    feed_step(11, 700, 0);
+    bool jammed = feed_step(90, 700, 0);
+    TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+}
+
+/* The absolute ceiling used to be gated on baseline_armed, which only happens
+ * after CV sits within ±5% of SV for the full stability window. Feeding the
+ * bit during spin-up therefore disabled it for the whole cut. */
+void test_spike_trips_with_unarmed_baseline(void) {
+    motor_load_motor_started(1000);          /* grace = 1000 ms */
+    tick_advance(1001);                      /* let the inrush grace expire */
+    /* CV nowhere near SV, so the baseline never arms. */
+    motor_load_update(96, 400, 1000, true);
+    bool jammed = jam_load_update(true, true, true, 95, 0, false, 0);
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_SPIKE, jam_get_status()->type);
 }
 
 /*===========================================================================*/
@@ -615,6 +752,16 @@ int main(void) {
     RUN_TEST(test_load_spike_below_threshold_no_jam);
     RUN_TEST(test_load_sustained_triggers_after_5s);
     RUN_TEST(test_load_jam_timer_resets_when_load_drops);
+
+    /* Step detector qualifiers */
+    RUN_TEST(test_step_without_droop_no_jam);
+    RUN_TEST(test_step_with_droop_trips_after_confirmation);
+    RUN_TEST(test_grab_trips_when_droop_follows_the_step);
+    RUN_TEST(test_step_at_high_load_trips_without_droop);
+    RUN_TEST(test_step_ignores_dropout_sample);
+    RUN_TEST(test_step_cancels_when_load_collapses);
+    RUN_TEST(test_step_threshold_zero_disables_detector);
+    RUN_TEST(test_spike_trips_with_unarmed_baseline);
 
     /* Spike disabled */
     RUN_TEST(test_load_spike_disabled_no_detection);

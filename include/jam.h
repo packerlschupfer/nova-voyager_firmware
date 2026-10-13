@@ -128,6 +128,28 @@ const char* jam_get_description(jam_type_t type);
  * EEPROM blob rather than a setter still has to be refused. */
 #define JAM_STEP_MIN_THRESH  5
 
+/* The live load-detector trip points, derived from the operator's settings.
+ * JAMINFO prints these so "what protection is live before I cut" has one
+ * answer computed by the same code the detectors use, rather than a second
+ * copy of the arithmetic in the console handler. */
+typedef struct {
+    uint8_t  spike_thresh;       /* (a) immediate trip, % filtered load */
+    uint8_t  sustained_thresh;   /* (b) trip after sustained_ms, % filtered */
+    uint16_t sustained_ms;       /* (b) how long (b) must hold */
+    uint8_t  droop_pct;          /* (c) CV this far below SV = out of regulation */
+    uint16_t droop_min_rpm;      /* (c) ...but never fewer RPM than this */
+    uint8_t  grab_min_load;      /* (c) droop below this load is not a grab */
+    uint8_t  step_abs_floor;     /* (c) a step landing here trips on its own */
+    uint8_t  step_confirm;       /* (c) consecutive qualified samples needed */
+} jam_load_config_t;
+
+/**
+ * @brief Resolve the operator's spike threshold into the live trip points.
+ * @param spike_threshold  settings.sensor.spike_thresh
+ * @param[out] out         filled with the effective configuration
+ */
+void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out);
+
 /**
  * @brief Evaluate load-based jam triggers (spike + sustained).
  *

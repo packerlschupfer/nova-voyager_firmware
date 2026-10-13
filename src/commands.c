@@ -840,6 +840,7 @@ extern void cmd_crashundef(void);
 #endif
 extern void cmd_loadinfo(void);
 extern void cmd_jaminfo(void);
+extern void cmd_jamtrace(void);
 
 // Hardware diagnostics
 extern void cmd_i2c(void);
@@ -989,6 +990,7 @@ const cmd_entry_t cmd_table[] = {
     {"CRASHUNDEF", cmd_crashundef, CMD_FLAG_DEBUG},
 #endif
     {"LOADINFO", cmd_loadinfo, 0},
+    {"JAMTRACE", cmd_jamtrace, 0},
     {"JAMINFO",  cmd_jaminfo,  0},
 
     // Step drill
