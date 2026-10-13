@@ -92,6 +92,75 @@ static const material_data_t materials_db[MATERIAL_COUNT] = {
 };
 
 /*===========================================================================*/
+/* Hole saws                                                                 */
+/*===========================================================================*/
+
+/* Hole saws are NOT twist drills with a speed factor applied, and treating
+ * them as one was badly wrong for metal.
+ *
+ * bit_types_db gives BIT_HOLE_SAW a 0.4x factor against the twist-drill
+ * surface speeds above. Checked against Bosch's own published figures for
+ * HSS bi-metal hole saws at 17 mm, that produced:
+ *
+ *      material      0.4x factor      Bosch
+ *      Aluminium     560-673          750
+ *      Steel          90-135          500
+ *      Stainless      60-90           250
+ *
+ * - out by four to five times on the ferrous materials. A hole saw cuts a
+ * thin kerf at the rim rather than a full-diameter hole, so it tolerates a
+ * much higher surface speed than a twist drill in the same material; the
+ * relationship is not a constant fraction.
+ *
+ * Bosch's numbers work out to a constant surface speed per material, which is
+ * what this table holds. Verified across their whole diameter range:
+ *
+ *      Stainless ~13 m/min   (17mm 250 rpm, 51mm 85, 102mm 40)
+ *      Steel     ~27 m/min   (17mm 500 rpm, 51mm 170, 102mm 85)
+ *      Aluminium ~40 m/min   (17mm 750 rpm, 51mm 255, 102mm 130)
+ *
+ * Source: Bosch accessories catalogue, "Speed recommendation for HSS Bi-metal
+ * and Sheet Metal holesaws", cross-checked against the printed packaging of
+ * two current PRO Multi Material saws (2 608 901 492, 17 mm, and
+ * 2 608 901 513, 51 mm) whose labels reproduce the table exactly. Hoffmann
+ * Group's bi-metal datasheets independently give ~41 m/min for aluminium.
+ *
+ * HONEST ABOUT PROVENANCE: the metal rows are Bosch's, and match to within a
+ * few rpm. Bosch publishes ONE "wood/PVC" column and no brass row, so the
+ * wood and plastic entries here are fitted to that single column (which is
+ * itself not constant surface speed - it is capped at 3000 rpm for small
+ * diameters), and hardwood and brass are scaled down from their siblings in
+ * the same proportion the twist-drill table uses. Those are reasoned, not
+ * sourced. */
+typedef struct {
+    uint16_t speed_min;  // Surface speed in m/min, hole saw
+    uint16_t speed_max;
+} hole_saw_data_t;
+
+static const hole_saw_data_t hole_saw_db[MATERIAL_COUNT] = {
+    {280, 360},   // Softwood   - fitted to Bosch's wood/PVC column
+    {200, 260},   // Hardwood   - scaled down from softwood
+    {250, 330},   // Plywood
+    {250, 330},   // MDF
+    { 38,  44},   // Aluminum   - Bosch ~40 m/min
+    { 24,  30},   // Brass      - scaled from aluminium
+    { 25,  29},   // Steel      - Bosch ~27 m/min
+    { 12,  14},   // Stainless  - Bosch ~13 m/min
+    {200, 280},   // Acrylic
+    {200, 280},   // ABS
+    {250, 330},   // PVC
+    {200, 280},   // Plastic
+};
+
+/* Bosch never recommends above 3000 rpm for a hole saw at any diameter, and
+ * the small-diameter end of their wood column is flat at exactly that. The
+ * low end is the machine's own minimum, not 250: a 102 mm stainless hole saw
+ * genuinely wants 40 rpm, and the twist-drill floor of 250 would have
+ * recommended six times that. */
+#define HOLE_SAW_RPM_CEIL   3000
+#define HOLE_SAW_RPM_FLOOR    50
+
+/*===========================================================================*/
 /* RPM Calculation                                                           */
 /*===========================================================================*/
 
@@ -103,13 +172,20 @@ static const material_data_t materials_db[MATERIAL_COUNT] = {
  *
  * Formula: RPM = (Surface_Speed * 1000) / (π * Diameter)
  */
-static inline uint16_t material_calc_rpm(uint16_t surface_speed_m_min, uint16_t diameter_mm) {
+static inline uint16_t material_calc_rpm_raw(uint16_t surface_speed_m_min, uint16_t diameter_mm) {
     if (diameter_mm == 0) return 500;  // Avoid division by zero
 
     // RPM = (speed * 1000) / (3.14159 * diameter)
     // Approximate: (speed * 1000) / (diameter * 3.14)
     // Using integer math: (speed * 318) / diameter  (318 ≈ 1000/3.14)
     uint32_t rpm = ((uint32_t)surface_speed_m_min * 318) / diameter_mm;
+
+    if (rpm > 65535) rpm = 65535;
+    return (uint16_t)rpm;
+}
+
+static inline uint16_t material_calc_rpm(uint16_t surface_speed_m_min, uint16_t diameter_mm) {
+    uint32_t rpm = material_calc_rpm_raw(surface_speed_m_min, diameter_mm);
 
     if (rpm < 250) rpm = 250;
     if (rpm > 5500) rpm = 5500;
@@ -149,6 +225,18 @@ static inline void material_calc_rpm_range(material_type_t mat, bit_type_t bit_t
     #define MATERIAL_RPM_FLOOR  250
     #define MATERIAL_RPM_CEIL   5500
 
+    uint16_t lo_clamp = MATERIAL_RPM_FLOOR;
+    uint16_t hi_clamp = MATERIAL_RPM_CEIL;
+
+    if (bit_type == BIT_HOLE_SAW) {
+        /* Own surface speeds, own limits — see hole_saw_db above. No
+         * factor_x10 is applied: that factor is what was wrong. */
+        *rpm_min = material_calc_rpm_raw(hole_saw_db[mat].speed_min, diameter_mm);
+        *rpm_max = material_calc_rpm_raw(hole_saw_db[mat].speed_max, diameter_mm);
+        lo_clamp = HOLE_SAW_RPM_FLOOR;
+        hi_clamp = HOLE_SAW_RPM_CEIL;
+    } else {
+
     // Calculate base RPM from material
     uint16_t base_min = material_calc_rpm(materials_db[mat].speed_min, diameter_mm);
     uint16_t base_max = material_calc_rpm(materials_db[mat].speed_max, diameter_mm);
@@ -157,6 +245,7 @@ static inline void material_calc_rpm_range(material_type_t mat, bit_type_t bit_t
     uint8_t factor = bit_types_db[bit_type].factor_x10;
     *rpm_min = (base_min * factor) / 10;
     *rpm_max = (base_max * factor) / 10;
+    }
 
     /* AUDIT FIX (MEDIUM, materials.h:157): min was only floor-clamped and max
      * only ceiling-clamped, so a combination whose whole band sits outside the
@@ -165,10 +254,10 @@ static inline void material_calc_rpm_range(material_type_t mat, bit_type_t bit_t
      * number that was never in the band at all, which then reaches
      * g_state.target_rpm. Clamp both ends to the same range, then restore the
      * ordering invariant that callers rely on. */
-    if (*rpm_min < MATERIAL_RPM_FLOOR) *rpm_min = MATERIAL_RPM_FLOOR;
-    if (*rpm_min > MATERIAL_RPM_CEIL)  *rpm_min = MATERIAL_RPM_CEIL;
-    if (*rpm_max < MATERIAL_RPM_FLOOR) *rpm_max = MATERIAL_RPM_FLOOR;
-    if (*rpm_max > MATERIAL_RPM_CEIL)  *rpm_max = MATERIAL_RPM_CEIL;
+    if (*rpm_min < lo_clamp) *rpm_min = lo_clamp;
+    if (*rpm_min > hi_clamp) *rpm_min = hi_clamp;
+    if (*rpm_max < lo_clamp) *rpm_max = lo_clamp;
+    if (*rpm_max > hi_clamp) *rpm_max = hi_clamp;
     if (*rpm_max < *rpm_min) *rpm_max = *rpm_min;
 }
 
