@@ -753,6 +753,71 @@ void cmd_loadinfo(void) {
     uart_puts("%\r\n");
 }
 
+void cmd_jamtrace(void) {
+    const uint16_t n = motor_load_trace_count();
+
+    uart_puts("JAMTRACE: ");
+    print_num(n);
+    uart_puts(" samples, ");
+    print_num(MOTOR_STATUS_POLL_RUNNING_MS);
+    uart_puts(" ms apart, oldest first\r\n");
+
+    if (motor_load_trace_is_frozen()) {
+        uart_puts("  frozen at tick ");
+        print_num((int32_t)motor_load_trace_frozen_at());
+        uart_puts(" - last sample is the trip\r\n");
+    } else {
+        uart_puts("  live - no trip captured, just the last few seconds\r\n");
+    }
+
+    if (n == 0) {
+        uart_puts("  (nothing recorded - spindle has not run since the last read)\r\n");
+        return;
+    }
+
+    uart_puts("t_ms,KR,dKR,filt,base,CV,SV,armed,grace\r\n");
+
+    motor_load_trace_entry_t e;
+    uint8_t prev_kr = 0;
+    bool have_prev = false;
+    bool aborted = false;
+
+    for (uint16_t i = 0; i < n; i++) {
+        if (!motor_load_trace_get(i, &e)) break;
+
+        /* Negative, so 0 is the newest sample — the trip, when frozen. */
+        int32_t t_ms = ((int32_t)i - (int32_t)(n - 1)) * MOTOR_STATUS_POLL_RUNNING_MS;
+        print_num(t_ms);                                     uart_puts(",");
+        print_num(e.kr);                                     uart_puts(",");
+        print_num(have_prev ? ((int32_t)e.kr - (int32_t)prev_kr) : 0);
+        uart_puts(",");
+        print_num(e.filtered);                               uart_puts(",");
+        print_num(e.baseline);                               uart_puts(",");
+        print_num(e.cv);                                     uart_puts(",");
+        print_num(e.sv);                                     uart_puts(",");
+        print_num((e.flags & MLOAD_TRACE_F_ARMED) ? 1 : 0);  uart_puts(",");
+        print_num((e.flags & MLOAD_TRACE_F_GRACE) ? 1 : 0);
+        uart_puts("\r\n");
+
+        prev_kr = e.kr;
+        have_prev = true;
+
+        if ((i % 16) == 15) {
+            if (console_pump()) { aborted = true; break; }
+        }
+    }
+
+    if (aborted) {
+        uart_puts("Aborted - trace kept\r\n");
+        return;
+    }
+
+    /* Reading it re-arms the recorder. One trace per trip: the next trip is
+     * worth more than a second copy of this one. */
+    motor_load_trace_reset();
+    uart_puts("Recorder re-armed\r\n");
+}
+
 void cmd_jaminfo(void) {
     const jam_status_t* st = jam_get_status();
     motor_load_debug_t d;
@@ -781,13 +846,25 @@ void cmd_jaminfo(void) {
      * whose job is answering "what protection is live before I cut" replied
      * "on" for two detectors that cannot fire. */
     const bool jam_on = s->sensor.jam_detect;
+    jam_load_config_t jc;
+    jam_get_load_config((uint8_t)s->sensor.spike_thresh, &jc);
+
     uart_puts("  spike (abs)  : ");
     uart_puts((jam_on && s->sensor.spike_detect) ? "on  " : "off ");
-    uart_puts("thr="); print_num(s->sensor.spike_thresh); uart_puts("%\r\n");
+    uart_puts("thr="); print_num(jc.spike_thresh); uart_puts("% filtered\r\n");
+    uart_puts("  sustained    : ");
+    uart_puts(jam_on ? "on  " : "off ");
+    uart_puts("thr="); print_num(jc.sustained_thresh);
+    uart_puts("% for "); print_num(jc.sustained_ms); uart_puts(" ms\r\n");
     uart_puts("  step (delta) : ");
     uart_puts((jam_on && s->sensor.spike_detect &&
                s->sensor.step_thresh >= JAM_STEP_MIN_THRESH) ? "on  " : "off ");
-    uart_puts("thr=+"); print_num(s->sensor.step_thresh); uart_puts("%\r\n");
+    uart_puts("thr=+"); print_num(s->sensor.step_thresh);
+    uart_puts("% raw landing >="); print_num(jc.step_abs_floor);
+    uart_puts("%, or CV >"); print_num(jc.droop_pct);
+    uart_puts("%/"); print_num(jc.droop_min_rpm);
+    uart_puts("rpm under SV at >="); print_num(jc.grab_min_load);
+    uart_puts("% load; x"); print_num(jc.step_confirm); uart_puts(" samples\r\n");
     uart_puts("  low-load     : ");
     uart_puts(s->sensor.low_load_detect ? "on  " : "off ");
     uart_puts("thr<"); print_num(s->sensor.low_load_thresh); uart_puts("%\r\n");

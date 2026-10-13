@@ -59,6 +59,20 @@ uint8_t motor_load_get_filtered(void);
 /** @return Last raw KR sample fed to motor_load_update (0 if none). */
 uint8_t motor_load_get_raw(void);
 
+/** @return The raw KR sample before the last one (0 if none yet).
+ *  The step detector needs it: the OEM test required both samples to be
+ *  non-zero so a dropout could not read as a full-load step. */
+uint8_t motor_load_get_raw_prev(void);
+
+/**
+ * @brief The CV/SV pair that arrived with the last load sample.
+ *
+ * The commanded speed as the motor task actually sent it, not the operator's
+ * dial — the step detector compares the two to decide whether the spindle is
+ * holding the speed it was told to hold.
+ */
+void motor_load_get_speeds(uint16_t *cv, uint16_t *sv);
+
 /**
  * @brief Signed step delta between the most recent two raw KR samples.
  *        Positive = load rose this poll cycle. Zero on the very first sample
@@ -88,5 +102,54 @@ typedef struct {
 
 /** @brief Diagnostic snapshot — used by LOADINFO / JAMINFO console commands. */
 void motor_load_get_debug(motor_load_debug_t *out);
+
+/*===========================================================================*/
+/* Load trace (jam flight recorder)                                          */
+/*===========================================================================*/
+
+/* Rolling record of the last MLOAD_TRACE_LEN poll samples, so a jam trip can
+ * be read back afterwards instead of being reconstructed from the operator's
+ * memory of the LCD. 160 samples at the 50 ms running poll = 8 s of history.
+ *
+ * Why this exists: JAM_LOAD_STEP fires on a single-sample raw delta, and
+ * nothing recorded what that sample or its predecessor actually were. Sizing
+ * the thresholds — or telling a real grab apart from heavy cutting — needs the
+ * samples, and a drill press is not a place to reproduce a trip on demand. */
+#define MLOAD_TRACE_LEN 160
+
+#define MLOAD_TRACE_F_ARMED  0x01   /* baseline was armed for this sample */
+#define MLOAD_TRACE_F_GRACE  0x02   /* inrush grace still active (detectors muted) */
+
+typedef struct {
+    uint8_t  kr;        /* raw KR sample as fed to motor_load_update() */
+    uint8_t  filtered;  /* EMA output after this sample */
+    uint8_t  flags;     /* MLOAD_TRACE_F_* */
+    uint8_t  baseline;  /* learned baseline, 0 while learning */
+    uint16_t cv;        /* actual RPM at this sample */
+    uint16_t sv;        /* commanded RPM at this sample */
+} motor_load_trace_entry_t;
+
+/** @brief Stop recording and keep what is in the buffer. Called on a jam trip. */
+void motor_load_trace_freeze(void);
+
+/** @brief Discard the trace and resume recording. */
+void motor_load_trace_reset(void);
+
+/** @return true while the trace is held for readout. */
+bool motor_load_trace_is_frozen(void);
+
+/** @return HAL tick at which the trace was frozen, 0 if never. */
+uint32_t motor_load_trace_frozen_at(void);
+
+/** @return number of samples held, 0..MLOAD_TRACE_LEN. */
+uint16_t motor_load_trace_count(void);
+
+/**
+ * @brief Read one trace sample.
+ * @param i    0 = oldest held sample, count-1 = newest.
+ * @param out  Destination, untouched when i is out of range.
+ * @return false if i >= motor_load_trace_count().
+ */
+bool motor_load_trace_get(uint16_t i, motor_load_trace_entry_t *out);
 
 #endif /* MOTOR_LOAD_H */
