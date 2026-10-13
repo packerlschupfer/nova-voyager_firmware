@@ -143,8 +143,16 @@ void motor_load_init(void) {
 void motor_load_motor_started(uint16_t target_rpm) {
     /* A frozen trace is a captured trip waiting to be read. Restarting the
      * spindle is the first thing an operator does after one, so keep it and
-     * leave the recorder blind until JAMTRACE has had it. */
-    if (!trace_frozen) motor_load_trace_reset();
+     * leave the recorder blind until JAMTRACE has had it.
+     *
+     * A trace recovered across a RESET is different, and gets no such
+     * priority. It comes back frozen, so it used to suppress recording for
+     * every subsequent run until someone read it - which ate a deliberate
+     * 10-second capture on 2026-10-13, because a stale buffer left in .noinit
+     * by an earlier boot outranked the run we were actually trying to record.
+     * A reset-recovered trace is a best-effort bonus; a run the operator just
+     * started is the thing they want. Yield to it. */
+    if (!trace_frozen || trace_origin == MLOAD_TRACE_RESET) motor_load_trace_reset();
     spike_grace_end = HAL_GetTick() + grace_for_delta(target_rpm);
     stability_required_ms = stability_for_delta(target_rpm);
     filter_initialized = false;
