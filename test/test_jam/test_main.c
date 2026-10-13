@@ -675,6 +675,42 @@ void test_droop_holds_off_until_cv_has_read_something(void) {
     TEST_ASSERT_FALSE(emergency_stop_called);
 }
 
+/* A trace recovered from .noinit comes back frozen. It must not then suppress
+ * recording of the run the operator just started - that cost a deliberate
+ * capture on 2026-10-13. A trip-frozen trace still survives a restart. */
+void test_reset_recovered_trace_yields_to_a_new_run(void) {
+    /* setUp() calls motor_load_init(), whose boot recovery RESTORES a
+     * non-empty buffer rather than clearing it - correct at a real boot,
+     * but it carries the previous test's samples in. Start from empty. */
+    motor_load_trace_reset();
+    motor_load_update(42, 1000, 1000, true);
+    TEST_ASSERT_EQUAL(1, motor_load_trace_count());
+
+    /* Stand in for trace_boot_recover(): frozen, origin = RESET. */
+    trace_frozen = true;
+    trace_origin = MLOAD_TRACE_RESET;
+
+    motor_load_motor_started(1000);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, motor_load_trace_count(),
+        "a reset-recovered trace must yield to a run the operator just started");
+    TEST_ASSERT_FALSE(motor_load_trace_is_frozen());
+}
+
+void test_trip_frozen_trace_survives_a_restart(void) {
+    /* setUp() calls motor_load_init(), whose boot recovery RESTORES a
+     * non-empty buffer rather than clearing it - correct at a real boot,
+     * but it carries the previous test's samples in. Start from empty. */
+    motor_load_trace_reset();
+    motor_load_update(42, 1000, 1000, true);
+    motor_load_trace_freeze();              /* as trigger_jam() does */
+    TEST_ASSERT_EQUAL(MLOAD_TRACE_TRIP, motor_load_trace_origin());
+
+    motor_load_motor_started(1000);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, motor_load_trace_count(),
+        "a captured trip must survive the restart that follows it");
+    TEST_ASSERT_TRUE(motor_load_trace_is_frozen());
+}
+
 void test_step_ignores_dropout_sample(void) {
     prime_baseline_at(10);
     /* Climb to a high steady load in increments below the step threshold, so
@@ -824,6 +860,10 @@ int main(void) {
     RUN_TEST(test_low_load_holds_off_until_cv_has_read_something);
     RUN_TEST(test_low_load_trips_once_cv_has_been_valid);
     RUN_TEST(test_droop_holds_off_until_cv_has_read_something);
+
+    /* Flight recorder */
+    RUN_TEST(test_reset_recovered_trace_yields_to_a_new_run);
+    RUN_TEST(test_trip_frozen_trace_survives_a_restart);
 
     /* Spike disabled */
     RUN_TEST(test_load_spike_disabled_no_detection);

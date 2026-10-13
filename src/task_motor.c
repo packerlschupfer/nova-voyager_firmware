@@ -233,6 +233,18 @@ static char hex_digit(uint8_t n);
  * the same job. */
 #define MOTOR_CHECKSUM_WAIT_MS  3
 
+/* Record a query whose reply never arrived, or arrived unparseable.
+ *
+ * diagnostics_protocol_error() was only ever called on a TX timeout, so a
+ * reply that was lost or discarded was counted NOWHERE. On 2026-10-13 that
+ * cost us most of an evening: STATS reported "Total queries: 1492 /
+ * Successful: 1492 / Timeouts: 0" while the CV query was failing on every
+ * single poll and the panel showed 0 rpm on a turning spindle. A query that
+ * did not come back is exactly what these counters are for. */
+static void query_reply_failed(bool timed_out) {
+    diagnostics_protocol_error(timed_out ? 2 /* timeout */ : 1 /* frame */);
+}
+
 static bool send_query(uint16_t cmd) {
     motor_uart_flush_rx();
 
@@ -457,10 +469,39 @@ static bool wait_response_for(uint32_t timeout_ms, uint16_t expected_cmd) {
                  * status poll could not. */
                 {
                     const uint32_t cks_start = HAL_GetTick();
+                    bool have_cks = false;
+                    uint8_t cks = 0;
                     while ((HAL_GetTick() - cks_start) < MOTOR_CHECKSUM_WAIT_MS) {
                         if (motor_uart_rx_available()) {
-                            (void)motor_uart_read_byte();
+                            cks = motor_uart_read_byte();
+                            have_cks = true;
                             break;
+                        }
+                    }
+
+                    /* Now that we read it, check it. The MCB's checksum is an
+                     * XOR over the unit byte through ETX inclusive - the same
+                     * rule our own transmit path uses (see cmd_rs in
+                     * commands_motor.c), confirmed against captured GF, SV and
+                     * CV replies.
+                     *
+                     * COUNTED, NOT ENFORCED, deliberately. That rule is derived
+                     * from a handful of observed frames; if it is wrong for
+                     * some reply we have not seen, enforcing it would reject
+                     * good data on a live machine - and KR feeds jam detection,
+                     * so the failure mode is an emergency stop mid-cut. Watch
+                     * STATS: a run with zero checksum errors across a few
+                     * thousand frames is the evidence needed to start
+                     * discarding bad ones. */
+                    if (have_cks && rx_index > 0) {
+                        size_t stx = SIZE_MAX;
+                        for (size_t k = 0; k < rx_index; k++) {
+                            if (rx_buffer[k] == 0x02) stx = k;   /* last STX before ETX */
+                        }
+                        if (stx != SIZE_MAX) {
+                            uint8_t x = 0;
+                            for (size_t k = stx + 1; k < rx_index; k++) x ^= rx_buffer[k];
+                            if (x != cks) diagnostics_protocol_error(0 /* checksum */);
                         }
                     }
                 }
@@ -1134,36 +1175,45 @@ static void motor_query_status(void) {
     send_query(CMD_SET_SPEED);
     if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_SET_SPEED)) {
         size_t off = protocol_find_stx(rx_buffer, rx_index, 3);
-        if (off != SIZE_MAX) {
-            int16_t target_speed;
-            if (protocol_parse_and_validate(rx_buffer, off, rx_index, 1, SPEED_MAX_RPM, &target_speed)) {
-                update_sv_state((uint16_t)target_speed);
-            }
+        int16_t target_speed;
+        if (off != SIZE_MAX &&
+            protocol_parse_and_validate(rx_buffer, off, rx_index, 1, SPEED_MAX_RPM, &target_speed)) {
+            update_sv_state((uint16_t)target_speed);
+        } else {
+            query_reply_failed(false);
         }
+    } else {
+        query_reply_failed(true);
     }
 
     // CV query — actual motor speed (also arrives unsolicited, but query ensures freshness)
     send_query(CMD_GET_CV);
     if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_GET_CV)) {
         size_t off = protocol_find_stx(rx_buffer, rx_index, 3);
-        if (off != SIZE_MAX) {
-            int16_t actual_speed;
-            if (protocol_parse_and_validate(rx_buffer, off, rx_index, 0, SPEED_MAX_RPM, &actual_speed)) {
-                update_cv_state((uint16_t)actual_speed);
-            }
+        int16_t actual_speed;
+        if (off != SIZE_MAX &&
+            protocol_parse_and_validate(rx_buffer, off, rx_index, 0, SPEED_MAX_RPM, &actual_speed)) {
+            update_cv_state((uint16_t)actual_speed);
+        } else {
+            query_reply_failed(false);
         }
+    } else {
+        query_reply_failed(true);
     }
 
     // KR query — motor load percentage
     send_query(CMD_KEEP_RUNNING);
     if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_KEEP_RUNNING)) {
         size_t off = protocol_find_stx(rx_buffer, rx_index, 3);
-        if (off != SIZE_MAX) {
-            int16_t load;
-            if (protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 100, &load)) {
-                update_kr_state((uint8_t)load);
-            }
+        int16_t load;
+        if (off != SIZE_MAX &&
+            protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 100, &load)) {
+            update_kr_state((uint8_t)load);
+        } else {
+            query_reply_failed(false);
         }
+    } else {
+        query_reply_failed(true);
     }
 
     // AUDIT FIX (HIGH, task_motor.c:1161): T0 (MCB heatsink temperature) used
