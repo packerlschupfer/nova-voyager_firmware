@@ -226,6 +226,13 @@ static char hex_digit(uint8_t n);
 
 
 
+/* How long to wait for the checksum byte that trails ETX. One byte at 9600
+ * baud is ~1.04 ms; this is deliberately tight so that if a frame ever arrives
+ * without one, we take the first byte of the next frame only in the window
+ * where it would have been indistinguishable anyway. motor.c uses 10 ms for
+ * the same job. */
+#define MOTOR_CHECKSUM_WAIT_MS  3
+
 static bool send_query(uint16_t cmd) {
     motor_uart_flush_rx();
 
@@ -420,6 +427,43 @@ static bool wait_response_for(uint32_t timeout_ms, uint16_t expected_cmd) {
             // Check for end of response (ETX = 0x03)
             if (b == 0x03) {
                 found_etx = true;
+
+                /* Consume the checksum byte that follows ETX.
+                 *
+                 * This reader used to return on ETX and leave the checksum on
+                 * the wire. send_query() flushes RX before the next question,
+                 * but at 9600 baud the checksum is still ~1 ms out when we get
+                 * there, so it lands AFTER the flush - as the first byte of the
+                 * NEXT reply. The varying leading bytes in every raw dump we
+                 * have taken (2B, 16, 17, 14 ...) are those strays.
+                 *
+                 * Usually harmless: the scan below finds the real STX one byte
+                 * in. But the checksum is a plain XOR of the payload, so for
+                 * some values it IS 0x02 - and then the scan locks onto a fake
+                 * STX at index 0, reads the command echo two bytes early, finds
+                 * it does not match, discards a perfectly good frame and waits
+                 * out the full timeout.
+                 *
+                 * SV=500 is exactly such a value: '1','S','V','5','0','0',ETX
+                 * XORs to 0x02. That is the whole "500 rpm reports no speed"
+                 * fault - the SV reply's checksum desynchronised the CV read
+                 * that followed it, CV never published, and the low-load
+                 * detector then read 0 rpm as a snapped belt and emergency
+                 * stopped the machine. 600, 610, 50 and 2000 all XOR to
+                 * something that is not 0x02, which is why only 500 failed.
+                 *
+                 * motor_read_response() in motor.c has always done this, which
+                 * is why CVCHECK could read 500 out of the same drive while the
+                 * status poll could not. */
+                {
+                    const uint32_t cks_start = HAL_GetTick();
+                    while ((HAL_GetTick() - cks_start) < MOTOR_CHECKSUM_WAIT_MS) {
+                        if (motor_uart_rx_available()) {
+                            (void)motor_uart_read_byte();
+                            break;
+                        }
+                    }
+                }
 
                 // Check if this is a CV or KR response before returning
                 // CV format: STX + unit + 'C' + 'V' + RPM + ETX
