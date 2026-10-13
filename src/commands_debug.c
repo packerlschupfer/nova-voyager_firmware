@@ -763,9 +763,22 @@ void cmd_jamtrace(void) {
     uart_puts(" ms apart, oldest first\r\n");
 
     if (motor_load_trace_is_frozen()) {
-        uart_puts("  frozen at tick ");
-        print_num((int32_t)motor_load_trace_frozen_at());
-        uart_puts(" - last sample is the trip\r\n");
+        switch (motor_load_trace_origin()) {
+            case MLOAD_TRACE_RESET:
+                uart_puts("  BOARD RESET while recording - last sample is the "
+                          "last poll before the reset\r\n");
+                break;
+            case MLOAD_TRACE_TRIP:
+            default:
+                uart_puts("  frozen at tick ");
+                print_num((int32_t)motor_load_trace_frozen_at());
+                uart_puts(" - last sample is the trip\r\n");
+                break;
+        }
+        if (motor_load_trace_rebooted()) {
+            uart_puts("  (recovered from RAM across a reset - the board "
+                      "rebooted after this was recorded)\r\n");
+        }
     } else {
         uart_puts("  live - no trip captured, just the last few seconds\r\n");
     }
