@@ -161,6 +161,13 @@ uint8_t motor_load_trace_origin(void);
 /** @return true if this trace was recovered from .noinit across a reset. */
 bool motor_load_trace_rebooted(void);
 
+/** @brief Note that the held trace has been printed. It is kept either way;
+ *  this only tells the next motor start that it may be replaced. */
+void motor_load_trace_mark_read(void);
+
+/** @return true once the held trace has been printed at least once. */
+bool motor_load_trace_was_read(void);
+
 /** @return true while the trace is held for readout. */
 bool motor_load_trace_is_frozen(void);
 

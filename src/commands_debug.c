@@ -761,6 +761,18 @@ void cmd_loadinfo(void) {
 }
 
 void cmd_jamtrace(void) {
+    /* JAMTRACE CLEAR discards the held trace and re-arms immediately. */
+    {
+        const char* buf = get_cmd_buf();
+        const uint8_t idx = get_cmd_idx();
+        if (idx >= 14 && buf[8] == ' ' &&
+            (buf[9] == 'C' || buf[9] == 'c')) {
+            motor_load_trace_reset();
+            uart_puts("Trace discarded - recorder armed\r\n");
+            return;
+        }
+    }
+
     const uint16_t n = motor_load_trace_count();
 
     uart_puts("JAMTRACE: ");
@@ -832,10 +844,14 @@ void cmd_jamtrace(void) {
         return;
     }
 
-    /* Reading it re-arms the recorder. One trace per trip: the next trip is
-     * worth more than a second copy of this one. */
-    motor_load_trace_reset();
-    uart_puts("Recorder re-armed\r\n");
+    /* Reading is NON-DESTRUCTIVE. It used to re-arm the recorder here, so a
+     * console read that was truncated, lost or piped through head() destroyed
+     * the only copy - which is exactly what happened to a real hole-saw cut's
+     * trace on 2026-10-13. The trace is instead kept until the next motor
+     * start, or until JAMTRACE CLEAR. */
+    motor_load_trace_mark_read();
+    uart_puts("Trace kept - re-armed by the next motor start, "
+              "or JAMTRACE CLEAR\r\n");
 }
 
 void cmd_jaminfo(void) {
