@@ -135,6 +135,19 @@ void motor_load_trace_freeze(void);
 /** @brief Discard the trace and resume recording. */
 void motor_load_trace_reset(void);
 
+/** How the held trace came to be held. */
+typedef enum {
+    MLOAD_TRACE_LIVE  = 0,  /**< Not frozen; recording. */
+    MLOAD_TRACE_TRIP  = 1,  /**< Frozen by a jam trip; last sample is the trip. */
+    MLOAD_TRACE_RESET = 2,  /**< Was still recording when the board reset. */
+} motor_load_trace_origin_t;
+
+/** @return one of motor_load_trace_origin_t. */
+uint8_t motor_load_trace_origin(void);
+
+/** @return true if this trace was recovered from .noinit across a reset. */
+bool motor_load_trace_rebooted(void);
+
 /** @return true while the trace is held for readout. */
 bool motor_load_trace_is_frozen(void);
 

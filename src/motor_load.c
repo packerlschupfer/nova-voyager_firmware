@@ -44,12 +44,30 @@ static uint16_t last_sv = 0;              // SV that came with the last sample
  * task, read from the console task via motor_load_trace_get(). Both run under
  * the scheduler and the buffer is only ever appended to, so a torn read shows
  * one stale sample rather than corrupt state; that is cheaper than taking a
- * lock on the 20 Hz hot path for a diagnostic. */
-static motor_load_trace_entry_t trace_buf[MLOAD_TRACE_LEN];
-static uint16_t trace_head = 0;      /* next slot to write */
-static uint16_t trace_count = 0;     /* 0..MLOAD_TRACE_LEN */
-static bool     trace_frozen = false;
-static uint32_t trace_frozen_tick = 0;
+ * lock on the 20 Hz hot path for a diagnostic.
+ *
+ * The buffer lives in .noinit (NOLOAD — see ldscript.ld) so that startup does
+ * NOT clear it. This is not a micro-optimisation: on 2026-10-13 a jam trip on
+ * the real machine coincided with an NRST reset, and the recorder lost the only
+ * recording of the only event it exists to record. SRAM keeps its contents
+ * across a pin, soft or watchdog reset — the C startup is the only thing that
+ * erases it — so surviving one is purely a matter of not being zeroed. A cold
+ * boot leaves indeterminate bytes here instead, which is what the magic word
+ * and the range checks in trace_boot_recover() are for. */
+#define MLOAD_NOINIT __attribute__((section(".noinit")))
+#define MLOAD_TRACE_MAGIC 0x4A54524Eu   /* 'JTRN' */
+
+MLOAD_NOINIT static uint32_t trace_magic;
+MLOAD_NOINIT static motor_load_trace_entry_t trace_buf[MLOAD_TRACE_LEN];
+MLOAD_NOINIT static uint16_t trace_head;        /* next slot to write */
+MLOAD_NOINIT static uint16_t trace_count;       /* 0..MLOAD_TRACE_LEN */
+MLOAD_NOINIT static bool     trace_frozen;
+MLOAD_NOINIT static uint32_t trace_frozen_tick;
+MLOAD_NOINIT static uint8_t  trace_origin;      /* motor_load_trace_origin_t */
+
+/* Set at boot, so .bss is right: it describes THIS boot's recovery, and must
+ * not itself survive into the next one. */
+static bool trace_rebooted = false;
 
 static void trace_push(uint8_t kr, uint16_t cv, uint16_t sv) {
     if (trace_frozen) return;
@@ -75,8 +93,36 @@ static uint32_t stability_for_delta(uint16_t delta_rpm) {
     return (s > MLOAD_STABLE_FLOOR_MS) ? s : MLOAD_STABLE_FLOOR_MS;
 }
 
+/* Decide, once per boot, whether what is sitting in .noinit is a real trace
+ * from before a reset or just uninitialised SRAM. */
+static void trace_boot_recover(void) {
+    const bool sane = (trace_magic == MLOAD_TRACE_MAGIC) &&
+                      (trace_head  <  MLOAD_TRACE_LEN) &&
+                      (trace_count <= MLOAD_TRACE_LEN);
+
+    if (!sane || trace_count == 0) {
+        /* Cold boot, a corrupted buffer, or nothing recorded. Start clean. */
+        trace_magic = MLOAD_TRACE_MAGIC;
+        motor_load_trace_reset();
+        return;
+    }
+
+    /* Samples survived a reset. Hold them for readout however they got here:
+     * an already-frozen buffer is a trip that was followed by a reset, and a
+     * live one is a reset that happened mid-cut with no trip at all — which is
+     * itself the more interesting recording of the two, and the one that was
+     * previously thrown away. */
+    trace_rebooted = true;
+    if (!trace_frozen) {
+        trace_frozen = true;
+        trace_origin = MLOAD_TRACE_RESET;
+    }
+    /* The pre-reset tick counter means nothing against this boot's clock. */
+    trace_frozen_tick = 0;
+}
+
 void motor_load_init(void) {
-    motor_load_trace_reset();
+    trace_boot_recover();
     filtered_load = 0;
     filter_initialized = false;
     raw_last = 0;
@@ -262,13 +308,25 @@ void motor_load_trace_freeze(void) {
     if (trace_frozen) return;        /* keep the first trip, not the last */
     trace_frozen = true;
     trace_frozen_tick = HAL_GetTick();
+    trace_origin = MLOAD_TRACE_TRIP;
 }
 
 void motor_load_trace_reset(void) {
+    trace_magic = MLOAD_TRACE_MAGIC;
     trace_head = 0;
     trace_count = 0;
     trace_frozen = false;
     trace_frozen_tick = 0;
+    trace_origin = MLOAD_TRACE_LIVE;
+    trace_rebooted = false;
+}
+
+uint8_t motor_load_trace_origin(void) {
+    return trace_origin;
+}
+
+bool motor_load_trace_rebooted(void) {
+    return trace_rebooted;
 }
 
 bool motor_load_trace_is_frozen(void) {
