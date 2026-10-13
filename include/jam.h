@@ -148,6 +148,14 @@ typedef struct {
  * @param spike_threshold  settings.sensor.spike_thresh
  * @param[out] out         filled with the effective configuration
  */
+/**
+ * @brief Has CV reported a usable speed at any point this run?
+ *
+ * False means the low-load and droop detectors are standing down: they cannot
+ * tell a stopped spindle from a run that never produced a speed reading.
+ */
+bool jam_cv_feedback_seen(void);
+
 void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out);
 
 /**

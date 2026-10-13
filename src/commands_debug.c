@@ -851,6 +851,12 @@ void cmd_jaminfo(void) {
     uart_puts("  filtered = "); print_num(d.filtered_load); uart_puts("%\r\n");
 
     const settings_t* s = settings_get();
+    uart_puts("  CV feed   = ");
+    if (jam_cv_feedback_seen()) {
+        uart_puts("ok\r\n");
+    } else {
+        uart_puts("not seen this run - low-load and droop standing down\r\n");
+    }
     uart_puts("Triggers:\r\n");
     /* REVIEW FIX (MEDIUM): both of these lines derived from spike_detect
      * alone, but jam_load_update() returns early on !jam_detect_enabled BEFORE
