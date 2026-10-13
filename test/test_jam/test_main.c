@@ -696,6 +696,31 @@ void test_reset_recovered_trace_yields_to_a_new_run(void) {
     TEST_ASSERT_FALSE(motor_load_trace_is_frozen());
 }
 
+/* Reading the trace must not destroy it: a truncated or piped console read
+ * used to be the end of the only copy, which lost a real hole-saw cut's
+ * recording on 2026-10-13. It is kept until the NEXT motor start. */
+void test_reading_the_trace_keeps_it_until_the_next_run(void) {
+    motor_load_trace_reset();
+    motor_load_update(42, 1000, 1000, true);
+    motor_load_trace_freeze();
+    TEST_ASSERT_EQUAL(1, motor_load_trace_count());
+
+    motor_load_trace_mark_read();           /* as JAMTRACE does */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, motor_load_trace_count(),
+        "reading must not discard the trace");
+    TEST_ASSERT_TRUE(motor_load_trace_is_frozen());
+
+    /* Read it again - still there. */
+    motor_load_trace_mark_read();
+    TEST_ASSERT_EQUAL(1, motor_load_trace_count());
+
+    /* The next run replaces it. */
+    motor_load_motor_started(1000);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, motor_load_trace_count(),
+        "a read trace must yield to the next run");
+    TEST_ASSERT_FALSE(motor_load_trace_was_read());
+}
+
 void test_trip_frozen_trace_survives_a_restart(void) {
     /* setUp() calls motor_load_init(), whose boot recovery RESTORES a
      * non-empty buffer rather than clearing it - correct at a real boot,
@@ -864,6 +889,7 @@ int main(void) {
     /* Flight recorder */
     RUN_TEST(test_reset_recovered_trace_yields_to_a_new_run);
     RUN_TEST(test_trip_frozen_trace_survives_a_restart);
+    RUN_TEST(test_reading_the_trace_keeps_it_until_the_next_run);
 
     /* Spike disabled */
     RUN_TEST(test_load_spike_disabled_no_detection);

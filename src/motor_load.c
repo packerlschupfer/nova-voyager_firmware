@@ -69,6 +69,11 @@ MLOAD_NOINIT static uint8_t  trace_origin;      /* motor_load_trace_origin_t */
  * not itself survive into the next one. */
 static bool trace_rebooted = false;
 
+/* Set when JAMTRACE has printed the held trace. Deliberately NOT in .noinit:
+ * a trace recovered across a reset has not been seen in THIS session, so it
+ * is kept until it is. */
+static bool trace_seen = false;
+
 static void trace_push(uint8_t kr, uint16_t cv, uint16_t sv) {
     if (trace_frozen) return;
     /* The index is used before the wrap below, and this buffer is .noinit — so
@@ -152,7 +157,16 @@ void motor_load_motor_started(uint16_t target_rpm) {
      * by an earlier boot outranked the run we were actually trying to record.
      * A reset-recovered trace is a best-effort bonus; a run the operator just
      * started is the thing they want. Yield to it. */
-    if (!trace_frozen || trace_origin == MLOAD_TRACE_RESET) motor_load_trace_reset();
+    /* ...and a trace that has already been READ has served its purpose, so a
+     * new run replaces it. That is what makes reading non-destructive safe:
+     * JAMTRACE can be read as many times as you like, and the data survives
+     * until you deliberately start another run. Reading used to re-arm the
+     * recorder immediately, which meant a truncated or lost console read
+     * destroyed the only copy - it cost a real hole-saw cut's trace on
+     * 2026-10-13. */
+    if (!trace_frozen || trace_origin == MLOAD_TRACE_RESET || trace_seen) {
+        motor_load_trace_reset();
+    }
     spike_grace_end = HAL_GetTick() + grace_for_delta(target_rpm);
     stability_required_ms = stability_for_delta(target_rpm);
     filter_initialized = false;
@@ -332,6 +346,15 @@ void motor_load_trace_reset(void) {
     trace_frozen_tick = 0;
     trace_origin = MLOAD_TRACE_LIVE;
     trace_rebooted = false;
+    trace_seen = false;
+}
+
+void motor_load_trace_mark_read(void) {
+    trace_seen = true;
+}
+
+bool motor_load_trace_was_read(void) {
+    return trace_seen;
 }
 
 uint8_t motor_load_trace_origin(void) {
