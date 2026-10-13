@@ -255,8 +255,15 @@ void cmd_calc(void) {
                            (bit_type_t)s->speed.bit_type,
                            s->speed.bit_diameter, &rpm_min, &rpm_max);
     uart_puts("Recommended RPM: "); print_num(rpm_min); uart_puts("-"); print_num(rpm_max);
-    uart_puts(" ("); print_num(bit_types_db[s->speed.bit_type].factor_x10);
-    uart_puts("0% speed)\r\n");
+    /* The factor is not what sets a hole saw's speed any more - it has its own
+     * surface-speed table (materials.h), so printing "40% speed" next to a
+     * number that was never multiplied by 0.4 would be a lie. */
+    if ((bit_type_t)s->speed.bit_type == BIT_HOLE_SAW) {
+        uart_puts(" (hole saw table)\r\n");
+    } else {
+        uart_puts(" ("); print_num(bit_types_db[s->speed.bit_type].factor_x10);
+        uart_puts("0% speed)\r\n");
+    }
 }
 
 void cmd_selftest(void) {
