@@ -129,6 +129,13 @@ void cmd_dump(void) {
     // Speed
     uart_puts("speed.default="); print_num(s->speed.default_rpm); uart_puts("\r\n");
     uart_puts("speed.max="); print_num(s->speed.max_limit); uart_puts("\r\n");
+    /* The speed calculator's inputs. These were reachable only from the LCD
+     * menu and visible only via CALC, so a wrong material or bit type - which
+     * is what makes the recommended RPM wrong - could not be seen or corrected
+     * over the console at all. Same gap motor.ir_* had. */
+    uart_puts("speed.material="); print_num(s->speed.material); uart_puts("\r\n");
+    uart_puts("speed.bit_type="); print_num(s->speed.bit_type); uart_puts("\r\n");
+    uart_puts("speed.bit_diameter="); print_num(s->speed.bit_diameter); uart_puts("\r\n");
 
     // Motor
     uart_puts("motor.profile="); print_num(s->motor.profile); uart_puts("\r\n");
@@ -233,6 +240,9 @@ static bool settings_read_by_key(const char* key, uint16_t* out) {
      * the only way to change an IR value was the LCD menu. */
     else if (strcmp(key, "motor.ir_gain") == 0)          *out = s->motor.ir_gain;
     else if (strcmp(key, "motor.ir_offset") == 0)        *out = s->motor.ir_offset;
+    else if (strcmp(key, "speed.material") == 0)         *out = s->speed.material;
+    else if (strcmp(key, "speed.bit_type") == 0)         *out = s->speed.bit_type;
+    else if (strcmp(key, "speed.bit_diameter") == 0)     *out = s->speed.bit_diameter;
     else return false;
 
     return true;
@@ -295,6 +305,8 @@ void cmd_set(void) {
     if (idx < 6 || buf[3] != ' ') {
         uart_puts("Usage: SET <key> <value>\r\n");
         uart_puts("Keys: speed.default speed.max sensor.jam_detect\r\n");
+        uart_puts("      speed.material speed.bit_type speed.bit_diameter\r\n");
+        uart_puts("      (CALC lists the material and bit numbers)\r\n");
         uart_puts("      sensor.spike_detect sensor.spike_thresh\r\n");
         uart_puts("      sensor.step_thresh sensor.low_load_detect\r\n");
         uart_puts("      sensor.low_load_thresh sensor.overload\r\n");
@@ -364,6 +376,12 @@ void cmd_set(void) {
         if (value > 32767) { ok = reject_i16(key); } else settings_set_ir_gain((int16_t)value);
     } else if (strcmp(key, "motor.ir_offset") == 0) {
         if (value > 32767) { ok = reject_i16(key); } else settings_set_ir_offset((int16_t)value);
+    } else if (strcmp(key, "speed.material") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_material((uint8_t)value);
+    } else if (strcmp(key, "speed.bit_type") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_bit_type((uint8_t)value);
+    } else if (strcmp(key, "speed.bit_diameter") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_bit_diameter((uint8_t)value);
     } else {
         uart_puts("Unknown key: ");
         uart_puts(key);
