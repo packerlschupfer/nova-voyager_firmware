@@ -71,6 +71,11 @@ static bool trace_rebooted = false;
 
 static void trace_push(uint8_t kr, uint16_t cv, uint16_t sv) {
     if (trace_frozen) return;
+    /* The index is used before the wrap below, and this buffer is .noinit — so
+     * an unvalidated head is an out-of-bounds WRITE, not just a lost sample.
+     * trace_boot_recover() is what normally guarantees the range; this is here
+     * so that a missed init path can never corrupt RAM again. */
+    if (trace_head >= MLOAD_TRACE_LEN) trace_head = 0;
     motor_load_trace_entry_t *e = &trace_buf[trace_head];
     e->kr       = kr;
     e->filtered = filtered_load;

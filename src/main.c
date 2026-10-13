@@ -28,6 +28,7 @@
 #include "tapping.h"
 #include "encoder.h"
 #include "motor.h"
+#include "motor_load.h"
 #include "buzzer.h"
 #include "lcd.h"
 #include "display.h"
@@ -746,6 +747,16 @@ int main(void) {
     // state — it just is not the comm-timeout fix.
     extern void jam_init(void);
     jam_init();
+
+    /* Same defect, same fix: motor_load_init() also had zero callers. While its
+     * state lived in .bss that was harmless - startup zeroed it - but the jam
+     * flight recorder now lives in .noinit so that it survives a reset, and
+     * NOTHING zeroes that. Without this call the recorder comes up holding
+     * whatever was in SRAM: a garbage trace_frozen leaves it permanently
+     * "frozen" and recording nothing, and a garbage trace_head is an
+     * out-of-bounds write in trace_push(). Found on the machine - a real trip
+     * froze a trace of zero samples with a "tick" of 0x20DD8F33. */
+    motor_load_init();
 
     // Show boot message based on boot type.
     // NOTE: HAL_Delay() does NOT work here — SysTick is stopped and the tick
