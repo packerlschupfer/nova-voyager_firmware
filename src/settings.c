@@ -15,6 +15,7 @@
 #include "shared.h"
 #include "motor.h"
 #include "tapping.h"
+#include "materials.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -1088,9 +1089,14 @@ SETTINGS_SETTER_RANGE(slow_start, speed.slow_start, uint16_t, 100, 1000)
 
 SETTINGS_SETTER_RANGE(anti_tearout, speed.anti_tearout, uint16_t, 100, 500)
 
-SETTINGS_SETTER_MAX(material, speed.material, uint8_t, 11)
+/* Both clamps used to be literal 11 and 8. They are the last valid INDEX into
+ * materials_db[] and bit_types_db[], which cmd_calc, menu.c and
+ * material_calc_rpm_range all index with no bound of their own - so a literal
+ * that outlives a change to either table is an out-of-range read, not just a
+ * wrong recommendation. Derive them from the tables. */
+SETTINGS_SETTER_MAX(material, speed.material, uint8_t, MATERIAL_COUNT - 1)
 
-SETTINGS_SETTER_MAX(bit_type, speed.bit_type, uint8_t, 8)
+SETTINGS_SETTER_MAX(bit_type, speed.bit_type, uint8_t, BIT_COUNT - 1)
 
 SETTINGS_SETTER_RANGE(bit_diameter, speed.bit_diameter, uint8_t, 1, 50)
 
