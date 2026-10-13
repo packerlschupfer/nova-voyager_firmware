@@ -115,7 +115,20 @@ void motor_load_get_debug(motor_load_debug_t *out);
  * nothing recorded what that sample or its predecessor actually were. Sizing
  * the thresholds — or telling a real grab apart from heavy cutting — needs the
  * samples, and a drill press is not a place to reproduce a trip on demand. */
-#define MLOAD_TRACE_LEN 160
+/* 160 samples = 8 s at the 50 ms running poll, 1280 bytes in .noinit.
+ *
+ * The games and read-only demo builds cannot afford that. They carry the game
+ * task's state plus a 4 KB FreeRTOS heap, which puts their static RAM about
+ * 340 bytes from the DFU hand-off word at 0x20004FF0 - and ldscript.ld's
+ * ASSERT turns that into a link error rather than a silent overlap, which is
+ * exactly what it caught in CI on 2026-10-13. Those builds are not what anyone
+ * diagnoses a jam with, so they get a shorter recorder rather than the product
+ * build getting a worse one. */
+#ifdef BUILD_GAMES
+#define MLOAD_TRACE_LEN 80      /* 4 s - games/demo builds are RAM-tight */
+#else
+#define MLOAD_TRACE_LEN 160     /* 8 s at 50 ms */
+#endif
 
 #define MLOAD_TRACE_F_ARMED  0x01   /* baseline was armed for this sample */
 #define MLOAD_TRACE_F_GRACE  0x02   /* inrush grace still active (detectors muted) */
