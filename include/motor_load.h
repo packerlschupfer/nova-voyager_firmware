@@ -145,14 +145,19 @@ void motor_load_get_debug(motor_load_debug_t *out);
  * diagnoses a jam with, so they get a shorter recorder rather than the product
  * build getting a worse one. */
 #ifdef BUILD_GAMES
-#define MLOAD_TRACE_LEN 80      /* 4 s - games/demo builds are RAM-tight */
+/* 40, not 80, since each entry grew a dt byte on 2026-10-14: at 80 the games
+ * and demo builds were left 132 bytes short of the DFU hand-off word, and the
+ * product build should not carry a worse recorder to buy headroom for a build
+ * that plays Pong. Nobody diagnoses a jam on these. */
+#define MLOAD_TRACE_LEN 40
 #else
-#define MLOAD_TRACE_LEN 160     /* 8 s at 50 ms */
+#define MLOAD_TRACE_LEN 160     /* ~13 s at the real ~85 ms running poll */
 #endif
 
 #define MLOAD_TRACE_F_ARMED  0x01   /* baseline was armed for this sample */
 #define MLOAD_TRACE_F_GRACE  0x02   /* inrush grace still active (detectors muted) */
 #define MLOAD_TRACE_F_ATTGT  0x04   /* CV had reached SV at least once by here */
+#define MLOAD_TRACE_F_DTSAT  0x08   /* dt_ms saturated - the real gap was longer */
 
 typedef struct {
     uint8_t  kr;        /* raw KR sample as fed to motor_load_update() */
@@ -161,6 +166,19 @@ typedef struct {
     uint8_t  baseline;  /* learned baseline, 0 while learning */
     uint16_t cv;        /* actual RPM at this sample */
     uint16_t sv;        /* commanded RPM at this sample */
+    /* Milliseconds since the previous sample, 0 on the first one. Capped at
+     * 255 with MLOAD_TRACE_F_DTSAT set when it was.
+     *
+     * Per-sample and not a single average, because the samples are NOT evenly
+     * spaced and no scalar can make them so:
+     *   - the running poll is four 9600-baud queries, ~85 ms, not the nominal
+     *     50 ms the t_ms column is printed from;
+     *   - one lost reply adds a MOTOR_RESPONSE_TIMEOUT_MS (250 ms) stall;
+     *   - and on a STALL the poll loop drops to the 500 ms idle interval while
+     *     motor_enabled is still true, so the recorder keeps sampling at
+     *     500 ms. Those rows are the whole reason the recorder exists, and
+     *     they were being printed 10x too close together. */
+    uint8_t  dt_ms;
 } motor_load_trace_entry_t;
 
 /** @brief Stop recording and keep what is in the buffer. Called on a jam trip. */
@@ -196,19 +214,28 @@ bool motor_load_trace_is_frozen(void);
 uint32_t motor_load_trace_frozen_at(void);
 
 /**
- * @brief Measured spacing of the recorded samples, in ms.
+ * @brief Take a consistent view of the ring buffer for readout.
  *
- * The trace is written once per motor poll, and the poll is NOT the nominal
- * MOTOR_STATUS_POLL_RUNNING_MS: four 9600-baud queries per cycle (GF, SV, CV,
- * KR) cannot fit in 50 ms, so every t_ms column printed from the nominal rate
- * understates real elapsed time. Reading thresholds in milliseconds off that
- * column was giving the wrong answer, so the recorder measures itself.
+ * The console task prints 160 rows over ~0.6 s while the motor task keeps
+ * pushing at ~85 ms. Recomputing the base index per row made rows repeat and
+ * every timestamp after the first shift wrong; copying an 8-byte entry
+ * non-atomically out of the slot being overwritten produced rows spliced from
+ * two different samples. Snapshot once, then read against the snapshot.
  *
- * @param[out] min_ms  Shortest observed gap, 0 if fewer than two samples.
- * @param[out] max_ms  Longest observed gap, capped at 255.
- * @param[out] last_ms Most recent gap.
+ * A frozen trace is not being written at all, so this costs nothing there; it
+ * matters for a LIVE read while the spindle turns.
+ *
+ * @param[out] count Samples available through motor_load_trace_get_at().
+ * @param[out] base  Opaque index of the oldest sample; pass it back unchanged.
  */
-void motor_load_trace_period(uint8_t *min_ms, uint8_t *max_ms, uint8_t *last_ms);
+void motor_load_trace_snapshot(uint16_t *count, uint16_t *base);
+
+/**
+ * @brief Read one sample relative to a snapshot taken by the call above.
+ * @return false if i >= the snapshot's count.
+ */
+bool motor_load_trace_get_at(uint16_t base, uint16_t i,
+                             motor_load_trace_entry_t *out);
 
 /** @return number of samples held, 0..MLOAD_TRACE_LEN. */
 uint16_t motor_load_trace_count(void);

@@ -245,23 +245,33 @@ void cmd_calc(void) {
 
     // Show current material/bit selection from settings
     const settings_t* s = settings_get();
+    /* Clamp before indexing. The setters range-check, but the EEPROM mirror is
+     * loaded with a CRC and no per-field validation, so a CRC-valid blob
+     * holding an out-of-range byte reaches these two array reads unchecked
+     * (review finding, 2026-10-14). material_calc_rpm_range() handles its own
+     * bounds; these name lookups did not. */
+    const uint8_t mat_idx = (s->speed.material < MATERIAL_COUNT)
+                              ? (uint8_t)s->speed.material : 0;
+    const uint8_t bit_idx = (s->speed.bit_type < BIT_COUNT)
+                              ? (uint8_t)s->speed.bit_type : 0;
+
     uart_puts("\r\nCurrent: ");
-    uart_puts(materials_db[s->speed.material].name);
-    uart_puts(", "); uart_puts(bit_types_db[s->speed.bit_type].name);
+    uart_puts(materials_db[mat_idx].name);
+    uart_puts(", "); uart_puts(bit_types_db[bit_idx].name);
     uart_puts(" "); print_num(s->speed.bit_diameter); uart_puts("mm\r\n");
 
     uint16_t rpm_min, rpm_max;
-    material_calc_rpm_range((material_type_t)s->speed.material,
-                           (bit_type_t)s->speed.bit_type,
+    material_calc_rpm_range((material_type_t)mat_idx,
+                           (bit_type_t)bit_idx,
                            s->speed.bit_diameter, &rpm_min, &rpm_max);
     uart_puts("Recommended RPM: "); print_num(rpm_min); uart_puts("-"); print_num(rpm_max);
     /* The factor is not what sets a hole saw's speed any more - it has its own
      * surface-speed table (materials.h), so printing "40% speed" next to a
      * number that was never multiplied by 0.4 would be a lie. */
-    if ((bit_type_t)s->speed.bit_type == BIT_HOLE_SAW) {
+    if ((bit_type_t)bit_idx == BIT_HOLE_SAW) {
         uart_puts(" (hole saw table)\r\n");
     } else {
-        uart_puts(" ("); print_num(bit_types_db[s->speed.bit_type].factor_x10);
+        uart_puts(" ("); print_num(bit_types_db[bit_idx].factor_x10);
         uart_puts("0% speed)\r\n");
     }
 }
@@ -773,29 +783,14 @@ void cmd_jamtrace(void) {
         }
     }
 
-    const uint16_t n = motor_load_trace_count();
+    /* One consistent view for the whole print. Recomputing the base per row
+     * made rows repeat and timestamps drift when reading a LIVE trace. */
+    uint16_t n = 0, base = 0;
+    motor_load_trace_snapshot(&n, &base);
 
     uart_puts("JAMTRACE: ");
     print_num(n);
-    uart_puts(" samples, t_ms from the nominal ");
-    print_num(MOTOR_STATUS_POLL_RUNNING_MS);
-    uart_puts(" ms poll, oldest first\r\n");
-
-    /* The real poll is slower than nominal - four 9600-baud queries per cycle
-     * do not fit in 50 ms - so t_ms is an index, not a clock. Print what the
-     * recorder measured, because every threshold argued in milliseconds off
-     * this trace depends on it. */
-    uint8_t dt_min = 0, dt_max = 0, dt_last = 0;
-    motor_load_trace_period(&dt_min, &dt_max, &dt_last);
-    if (dt_max > 0) {
-        uart_puts("  measured poll ");
-        print_num(dt_min); uart_puts("-"); print_num(dt_max);
-        uart_puts(" ms (last "); print_num(dt_last);
-        uart_puts(") - scale t_ms by ");
-        print_num(dt_last); uart_puts("/");
-        print_num(MOTOR_STATUS_POLL_RUNNING_MS);
-        uart_puts(" for real time\r\n");
-    }
+    uart_puts(" samples, t_ms measured, oldest first\r\n");
 
     if (motor_load_trace_is_frozen()) {
         switch (motor_load_trace_origin()) {
@@ -823,19 +818,37 @@ void cmd_jamtrace(void) {
         return;
     }
 
-    uart_puts("t_ms,KR,dKR,filt,base,CV,SV,armed,grace,attgt\r\n");
+    /* Sum the per-sample gaps so the column is real elapsed time, not the
+     * sample index times a nominal poll rate the hardware never achieves.
+     * Walk them once up front to learn the total, so the newest sample can
+     * still be t=0 and the trip stays the origin. */
+    uint32_t span_ms = 0;
+    {
+        motor_load_trace_entry_t t;
+        for (uint16_t i = 1; i < n; i++) {
+            if (!motor_load_trace_get_at(base, i, &t)) break;
+            span_ms += t.dt_ms;
+        }
+    }
+
+    uart_puts("t_ms,dt,KR,dKR,filt,base,CV,SV,armed,grace,attgt\r\n");
 
     motor_load_trace_entry_t e;
     uint8_t prev_kr = 0;
     bool have_prev = false;
     bool aborted = false;
+    uint32_t elapsed = 0;
 
     for (uint16_t i = 0; i < n; i++) {
-        if (!motor_load_trace_get(i, &e)) break;
+        if (!motor_load_trace_get_at(base, i, &e)) break;
 
+        if (i > 0) elapsed += e.dt_ms;
         /* Negative, so 0 is the newest sample — the trip, when frozen. */
-        int32_t t_ms = ((int32_t)i - (int32_t)(n - 1)) * MOTOR_STATUS_POLL_RUNNING_MS;
+        int32_t t_ms = (int32_t)elapsed - (int32_t)span_ms;
         print_num(t_ms);                                     uart_puts(",");
+        print_num(e.dt_ms);
+        if (e.flags & MLOAD_TRACE_F_DTSAT) uart_puts("+");
+        uart_puts(",");
         print_num(e.kr);                                     uart_puts(",");
         print_num(have_prev ? ((int32_t)e.kr - (int32_t)prev_kr) : 0);
         uart_puts(",");

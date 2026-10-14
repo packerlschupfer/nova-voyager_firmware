@@ -177,7 +177,9 @@ void motor_scan_release(void) {
 /*===========================================================================*/
 
 #define MAX_COMM_FAILURES       15  // 15 consecutive failures triggers fault
-// Note: MOTOR_RESPONSE_TIMEOUT_MS defined in config.h (100ms)
+// Note: MOTOR_RESPONSE_TIMEOUT_MS defined in config.h (250 ms — it was raised
+// from 100 and this comment was not; a stale number here is how a 250 ms stall
+// per lost reply went unaccounted for in the trace's timing).
 
 /*===========================================================================*/
 /* Private Variables                                                          */
@@ -1063,6 +1065,7 @@ static void motor_query_status(void) {
                 /* Truncated, unterminated or foreign frame. Treat it as the
                  * comm failure it is rather than as "motor stopped". */
                 consecutive_comm_failures++;
+                query_reply_failed(false);
             } else {
                 consecutive_comm_failures = 0;
 
@@ -1165,10 +1168,12 @@ static void motor_query_status(void) {
         } else {
             // Got response but invalid format - count as failure (H5)
             consecutive_comm_failures++;
+            query_reply_failed(false);
         }
     } else {
         // No response at all - communication failure (H5)
         consecutive_comm_failures++;
+        query_reply_failed(true);
     }
 
     // SV query — confirm MCB accepted our target speed
@@ -1229,12 +1234,15 @@ static void motor_query_status(void) {
         send_query(CMD_T0);
         if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_T0)) {
             size_t toff = protocol_find_stx(rx_buffer, rx_index, 3);
-            if (toff != SIZE_MAX) {
-                int16_t mcb_temp;
-                if (protocol_parse_and_validate(rx_buffer, toff, rx_index, 0, 150, &mcb_temp)) {
-                    temp_monitor_update((uint16_t)mcb_temp, settings_get()->power.temp_threshold);
-                }
+            int16_t mcb_temp;
+            if (toff != SIZE_MAX &&
+                protocol_parse_and_validate(rx_buffer, toff, rx_index, 0, 150, &mcb_temp)) {
+                temp_monitor_update((uint16_t)mcb_temp, settings_get()->power.temp_threshold);
+            } else {
+                query_reply_failed(false);
             }
+        } else {
+            query_reply_failed(true);
         }
     }
 
@@ -1723,7 +1731,14 @@ void task_motor(void *pvParameters) {
 
                 // Second GF query (matches original firmware pattern)
                 send_query(CMD_GET_FLAGS);
-                wait_response(MOTOR_RESPONSE_TIMEOUT_MS);
+                /* Counted like every other query: STATS used to report
+                 * "Timeouts: 0" while a query failed on every cycle, which is
+                 * exactly the blind spot that hid the CV checksum fault for
+                 * two days. A diagnostic that cannot show a loss is worse than
+                 * no diagnostic, because it is believed. */
+                if (!wait_response(MOTOR_RESPONSE_TIMEOUT_MS)) {
+                    query_reply_failed(true);
+                }
 
                 // KR query — motor load
                 send_query(CMD_KEEP_RUNNING);
@@ -1735,12 +1750,15 @@ void task_motor(void *pvParameters) {
                  * EVT_LOW_VOLTAGE with it). */
                 if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_KEEP_RUNNING)) {
                     size_t off = protocol_find_stx(rx_buffer, rx_index, 3);
-                    if (off != SIZE_MAX) {
-                        int16_t load;
-                        if (protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 100, &load)) {
-                            update_kr_state((uint8_t)load);
-                        }
+                    int16_t load;
+                    if (off != SIZE_MAX &&
+                        protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 100, &load)) {
+                        update_kr_state((uint8_t)load);
+                    } else {
+                        query_reply_failed(false);
                     }
+                } else {
+                    query_reply_failed(true);
                 }
 
                 // T0 query — MCB heatsink temperature (slow-changing, idle only)
@@ -1749,21 +1767,28 @@ void task_motor(void *pvParameters) {
                 send_query(CMD_T0);
                 if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_T0)) {
                     size_t toff = protocol_find_stx(rx_buffer, rx_index, 3);
-                    if (toff != SIZE_MAX) {
-                        int16_t mcb_temp;
-                        if (protocol_parse_and_validate(rx_buffer, toff, rx_index, 0, 150, &mcb_temp)) {
-                            temp_monitor_update((uint16_t)mcb_temp, settings_get()->power.temp_threshold);
-                        }
+                    int16_t mcb_temp;
+                    if (toff != SIZE_MAX &&
+                        protocol_parse_and_validate(rx_buffer, toff, rx_index, 0, 150, &mcb_temp)) {
+                        temp_monitor_update((uint16_t)mcb_temp, settings_get()->power.temp_threshold);
+                    } else {
+                        query_reply_failed(false);
                     }
+                } else {
+                    query_reply_failed(true);
                 }
 
                 // UD query — DC bus voltage (slow-changing, idle only)
                 send_query(CMD_UD);
                 if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_UD)) {
                     size_t off = protocol_find_stx(rx_buffer, rx_index, 3);
-                    if (off != SIZE_MAX) {
-                        int16_t voltage;
-                        if (protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 500, &voltage)) {
+                    int16_t voltage;
+                    const bool ud_ok =
+                        (off != SIZE_MAX) &&
+                        protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 500, &voltage);
+                    if (!ud_ok) query_reply_failed(false);
+                    {
+                        if (ud_ok) {
                             STATE_LOCK();
                             g_state.dc_bus_voltage = (uint16_t)voltage;
                             STATE_UNLOCK();
@@ -1800,6 +1825,8 @@ void task_motor(void *pvParameters) {
                             }
                         }
                     }
+                } else {
+                    query_reply_failed(true);
                 }
             }
 
