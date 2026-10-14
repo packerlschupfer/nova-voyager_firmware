@@ -93,9 +93,14 @@ bool motor_load_in_spike_grace(void);
 /**
  * @brief Has the spindle actually REACHED the speed it was last commanded?
  *
- * True once CV has come within the baseline window of the current SV at least
- * once since the last motor start or speed change; false again the instant the
+ * True once CV has held jam.h's spindle-regulation band - the same band the
+ * droop detector trips on - for MLOAD_AT_TARGET_SAMPLES consecutive polls
+ * since the last motor start or speed change. False again the instant the
  * setpoint moves in either direction.
+ *
+ * The dwell is what keeps a STALE CV from arming it: the MCB refreshes CV only
+ * every ~6 polls, so a single in-band sample may be a reading taken before the
+ * setpoint moved.
  *
  * This is what makes "CV is under SV" mean something. During a ramp CV is
  * legitimately under SV, so a time-based grace window is a guess at how long

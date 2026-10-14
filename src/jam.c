@@ -30,8 +30,10 @@
 #define JAM_SUSTAINED_MARGIN_PCT    15      // (b) sustained tier sits this far below (a)
 /* Smallest threshold that can mean anything as a trip point. */
 #define JAM_SPIKE_MIN_THRESH        20
-#define JAM_LOW_LOAD_CV_THRESHOLD   25      // (d) CV below this counts as "stopped"
-/* CV must prove itself once per run before any detector may read "CV is low"
+/* JAM_LOW_LOAD_CV_THRESHOLD and JAM_CV_VALID_RPM now live in jam.h -
+ * motor_load.c's at-target gate needs the same number. Why the gate exists:
+ *
+ * CV must prove itself once per run before any detector may read "CV is low"
  * as "the spindle is not turning".
  *
  * Measured 2026-10-13, and the cause is NOT yet known. A start at SV=500 on
@@ -48,7 +50,6 @@
  * never produced a speed reading", and the second is not a reason to
  * emergency-stop a machine that is cutting. A belt that breaks after the
  * spindle is up still trips: CV will have been valid by then. */
-#define JAM_CV_VALID_RPM            JAM_LOW_LOAD_CV_THRESHOLD
 #define JAM_LOW_LOAD_DEBOUNCE       18      // (d) consecutive low-load samples (~900 ms at 20 Hz)
 
 /* (c) qualifiers for the step detector.
@@ -64,13 +65,11 @@
  * either a speed droop or a load already near the controller's ceiling, and it
  * has to still be true on the next sample.
  *
- * JAM_DROOP_PCT is deliberately looser than motor_load's ±5% baseline window —
- * that window decides when the load reading is trustworthy, this one decides
- * when the spindle is in trouble, and normal regulation ripple must not count.
- * The RPM floor keeps it meaningful at low commanded speeds, where 10% is a
- * handful of RPM. */
-#define JAM_DROOP_PCT               10      // (c) CV this far below SV = out of regulation
-#define JAM_DROOP_MIN_RPM           60      // (c) ...but never less than this many RPM
+ * The regulation band itself (JAM_DROOP_PCT / JAM_DROOP_MIN_RPM and
+ * jam_spindle_out_of_regulation()) lives in jam.h: motor_load.c's at-target
+ * gate has to arm on exactly the band this trips on. It is deliberately looser
+ * than motor_load's ±5% BASELINE window, which answers a different question -
+ * when the load reading is trustworthy, not when the spindle is in trouble. */
 #define JAM_GRAB_MIN_LOAD           25      // (c) droop below this load is not a grab
 #define JAM_STEP_ABS_FLOOR          80      // (c) a step landing here trips on its own
 #define JAM_STEP_CONFIRM             2      // (c) consecutive qualified samples (~100 ms)
@@ -195,6 +194,13 @@ void jam_motor_stopped(void) {
     motor_was_running = false;
     low_load_count = 0;
     cv_seen_valid = false;
+    /* Robustness: the in-grace branch of jam_load_update() clears these on the
+     * first poll of any new run, so they cannot actually latch across a stop.
+     * Clearing them here anyway means that invariant does not have to hold for
+     * this to be correct. */
+    step_pending = false;
+    step_confirm = 0;
+    step_from = 0;
 
     // Only clear jam if acknowledged or no jam
     if (jam_status.acknowledged || jam_status.type == JAM_NONE) {
@@ -230,15 +236,6 @@ void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out) {
     out->grab_min_load    = JAM_GRAB_MIN_LOAD;
     out->step_abs_floor   = JAM_STEP_ABS_FLOOR;
     out->step_confirm     = JAM_STEP_CONFIRM;
-}
-
-/* Is the spindle failing to hold the commanded speed? One-sided on purpose:
- * CV above SV is an overshoot on a ramp-down, not a jam. */
-static bool spindle_out_of_regulation(uint16_t cv, uint16_t sv) {
-    if (sv == 0) return false;
-    uint16_t tol = (uint16_t)(((uint32_t)sv * JAM_DROOP_PCT) / 100);
-    if (tol < JAM_DROOP_MIN_RPM) tol = JAM_DROOP_MIN_RPM;
-    return (uint32_t)cv + tol < (uint32_t)sv;
 }
 
 static void trigger_jam(jam_type_t type, uint16_t duration) {
@@ -575,7 +572,7 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
          * chuck. Reaching the setpoint is not a guess. */
         const bool drooping = cv_seen_valid &&
                               motor_load_at_target_seen() &&
-                              spindle_out_of_regulation(cv_now, sv_now) &&
+                              jam_spindle_out_of_regulation(cv_now, sv_now) &&
                               (raw >= JAM_GRAB_MIN_LOAD);
 
         const bool step_seen = (raw > 0) && (motor_load_get_raw_prev() > 0) &&
@@ -585,9 +582,18 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
 
         /* A slam has to STAY slammed. A load that collapses on the next sample
          * is the bit breaking through, or a dropped reading — cancel, don't
-         * confirm. */
+         * confirm.
+         *
+         * "Still slammed" has to mean the same thing the slam itself meant, so
+         * it tests BOTH halves of step_seen's bar: the step height AND the
+         * absolute floor. Testing only `step_from + step_threshold` (review
+         * finding, 2026-10-14) let a low Step Thresh confirm on a wobble -
+         * at StepTh=5, a 50 -> 82 slam was confirmed by any sample >= 55,
+         * which is most of the way back down to free-run and nowhere near the
+         * loaded state that justified the trip. */
         const bool still_up = step_pending &&
-                              (raw >= (uint16_t)step_from + step_threshold);
+                              (raw >= (uint16_t)step_from + step_threshold) &&
+                              (raw >= JAM_STEP_ABS_FLOOR);
 
         if (step_seen) {
             step_pending = true;
