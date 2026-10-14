@@ -100,7 +100,20 @@ static TickType_t load_jam_start_time = 0;
 static bool load_jam_condition_active = false;
 static uint8_t low_load_count = 0;          // (d) consecutive-samples debounce
 static bool    cv_seen_valid = false;       // CV has read >= JAM_CV_VALID_RPM this run
-static uint8_t step_confirm = 0;            // (c) consecutive qualified samples
+/* (c) One counter per claim, deliberately NOT shared.
+ *
+ * They used to be one. A SLAM set the counter to 1 and any DROOP sample then
+ * confirmed it, which let two different claims about two different samples add
+ * up to a trip neither of them made (review finding, 2026-10-14). The concrete
+ * case is a breakthrough: 40 -> 82 is a slam, the bit then breaks through and
+ * the load collapses to 30, but CV is up to 6 polls stale and still reports the
+ * speed the spindle had WHILE it was loaded - so the collapsed sample reads as
+ * a droop and confirms a slam that had already cancelled itself.
+ *
+ * "Load slammed and stayed slammed" and "the spindle has lost its speed" are
+ * separate sentences. Each now needs JAM_STEP_CONFIRM samples of its own. */
+static uint8_t slam_confirm = 0;            // (c) consecutive still-slammed samples
+static uint8_t droop_confirm = 0;           // (c) consecutive out-of-regulation samples
 static bool    step_pending = false;        // (c) a step was seen, awaiting confirmation
 static uint8_t step_from = 0;               // (c) raw level the step jumped from
 
@@ -133,7 +146,8 @@ void jam_init(void) {
     load_jam_condition_active = false;
     low_load_count = 0;
     cv_seen_valid = false;
-    step_confirm = 0;
+    slam_confirm = 0;
+    droop_confirm = 0;
     step_pending = false;
     step_from = 0;
 }
@@ -158,7 +172,8 @@ void jam_reset(void) {
     load_jam_condition_active = false;
     low_load_count = 0;
     cv_seen_valid = false;
-    step_confirm = 0;
+    slam_confirm = 0;
+    droop_confirm = 0;
     step_pending = false;
     step_from = 0;
 }
@@ -199,7 +214,8 @@ void jam_motor_stopped(void) {
      * Clearing them here anyway means that invariant does not have to hold for
      * this to be correct. */
     step_pending = false;
-    step_confirm = 0;
+    slam_confirm = 0;
+    droop_confirm = 0;
     step_from = 0;
 
     // Only clear jam if acknowledged or no jam
@@ -252,6 +268,29 @@ static uint8_t effective_spike_thresh(uint8_t setting) {
  * HIGHER. */
 #define JAM_SUSTAINED_BASELINE_MARGIN 20
 
+/* Same problem, same shape, for the droop path's load qualifier.
+ *
+ * JAM_GRAB_MIN_LOAD is 25, and free-run KR on this machine is 24-25% at
+ * 1250 rpm - so at 1250 the qualifier admits a spindle pulling NO load at all,
+ * and above 1250 it stops discriminating entirely. "Droop below this load is
+ * not a grab" has to mean "below this load the tool is not cutting", and that
+ * is a baseline-relative statement, not an absolute one.
+ *
+ * This is what makes the breakthrough case safe rather than merely
+ * uncounted: after the bit breaks through, load falls back toward free-run
+ * while CV stays stale-low for up to 6 polls, and an absolute 25 would let
+ * those samples qualify. */
+#define JAM_GRAB_BASELINE_MARGIN      10
+
+static uint8_t effective_grab_min_load(void) {
+    uint8_t baseline = 0;
+    if (!motor_load_get_baseline(&baseline)) return JAM_GRAB_MIN_LOAD;
+    uint16_t floored = (uint16_t)baseline + JAM_GRAB_BASELINE_MARGIN;
+    if (floored < JAM_GRAB_MIN_LOAD) floored = JAM_GRAB_MIN_LOAD;
+    if (floored > 100) floored = 100;
+    return (uint8_t)floored;
+}
+
 static uint8_t effective_sustained_thresh(uint8_t eff_spike, bool *from_baseline) {
     uint16_t from_setting = (eff_spike > JAM_SUSTAINED_MARGIN_PCT)
                               ? (uint16_t)(eff_spike - JAM_SUSTAINED_MARGIN_PCT)
@@ -282,7 +321,7 @@ void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out) {
     out->sustained_ms     = JAM_LOAD_TIMEOUT_MS;
     out->droop_pct        = JAM_DROOP_PCT;
     out->droop_min_rpm    = JAM_DROOP_MIN_RPM;
-    out->grab_min_load    = JAM_GRAB_MIN_LOAD;
+    out->grab_min_load    = effective_grab_min_load();
     out->step_abs_floor   = JAM_STEP_ABS_FLOOR;
     out->step_confirm     = JAM_STEP_CONFIRM;
 }
@@ -587,7 +626,14 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
      * The dropout guard (prev > 0 && raw > 0) is the OEM's, from
      * MOTOR_PROTOCOL.md § Jam detector branch B: a single KR=0 from the MCB
      * mid-cut otherwise reads as a full-load step on the sample after it. */
-    if (spike_detect_enabled && step_threshold >= JAM_STEP_MIN_THRESH && !in_inrush) {
+    /* NOT gated on spike_detect_enabled any more (review finding, 2026-10-14).
+     * The raw step delta is the OEM's ONLY load-jam detector; the absolute
+     * ceiling is ours, added on top. Hanging the OEM-parity detector off the
+     * switch for our addition meant "Spike Detect off" quietly removed more
+     * protection than it names. The controls that belong to this detector are
+     * the master jam_detect (checked above) and Step Thresh, which switches it
+     * off at 0 - both still honoured. */
+    if (step_threshold >= JAM_STEP_MIN_THRESH && !in_inrush) {
         /* Same gate, and here it matters more: with CV still at 0 during
          * spin-up, cv + tol < sv is trivially true, so every cut that reached
          * JAM_GRAB_MIN_LOAD would read as a grab. The raw-step path below does
@@ -619,10 +665,16 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
          * while grace allows 1250 ms, and the right number depends on the
          * MCB's ramp setting, the load and the inertia of whatever is in the
          * chuck. Reaching the setpoint is not a guess. */
+        /* cv_seen_valid is IMPLIED here now: the at-target gate will not arm
+         * below JAM_CV_VALID_RPM, which is the same threshold that sets
+         * cv_seen_valid. Kept because it is free and states the intent, and
+         * because these two gates have drifted apart from each other once
+         * already; test_at_target_cannot_arm_without_a_valid_cv_reading pins
+         * the implication so it cannot break silently. */
         const bool drooping = cv_seen_valid &&
                               motor_load_at_target_seen() &&
                               jam_spindle_out_of_regulation(cv_now, sv_now) &&
-                              (raw >= JAM_GRAB_MIN_LOAD);
+                              (raw >= effective_grab_min_load());
 
         const bool step_seen = (raw > 0) && (motor_load_get_raw_prev() > 0) &&
                                (step_delta > 0) &&
@@ -644,25 +696,38 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
                               (raw >= (uint16_t)step_from + step_threshold) &&
                               (raw >= JAM_STEP_ABS_FLOOR);
 
+        /* SLAM: a step that happened and then stayed. */
         if (step_seen) {
             step_pending = true;
             step_from = motor_load_get_raw_prev();
-            step_confirm = 1;
-        } else if (drooping || still_up) {
-            if (++step_confirm >= JAM_STEP_CONFIRM) {
-                trigger_jam(JAM_LOAD_STEP, 0);
-                step_pending = false;
-                step_confirm = 0;
-                load_jam_condition_active = false;
-                return true;
-            }
+            slam_confirm = 1;
+        } else if (still_up) {
+            slam_confirm++;
         } else {
             step_pending = false;
-            step_confirm = 0;
+            slam_confirm = 0;
+        }
+
+        /* DROOP: independent, and counted separately so it can never finish
+         * confirming a slam that cancelled, or vice versa. */
+        if (drooping) {
+            droop_confirm++;
+        } else {
+            droop_confirm = 0;
+        }
+
+        if (slam_confirm >= JAM_STEP_CONFIRM || droop_confirm >= JAM_STEP_CONFIRM) {
+            trigger_jam(JAM_LOAD_STEP, 0);
+            step_pending = false;
+            slam_confirm = 0;
+            droop_confirm = 0;
+            load_jam_condition_active = false;
+            return true;
         }
     } else {
         step_pending = false;
-        step_confirm = 0;
+        slam_confirm = 0;
+        droop_confirm = 0;
     }
 
     /* (a)+(b) Absolute tiers. The operator's threshold is the authority.

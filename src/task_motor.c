@@ -429,6 +429,12 @@ static bool wait_response_for(uint32_t timeout_ms, uint16_t expected_cmd) {
     rx_index = 0;
     memset(rx_buffer, 0, sizeof(rx_buffer));
     bool found_etx = false;
+    /* A reply longer than the buffer means the line is desynchronised, and the
+     * dropped byte may be the ETX itself - in which case the frame we hold has
+     * no terminator and the checksum below would be computed over the wrong
+     * bytes, reporting a checksum error for what is really an overflow
+     * (review finding, 2026-10-14). Track it and say which it was. */
+    bool rx_overflow = false;
     uint16_t poll_count = 0;    /* per-call, not static — see the yield below */
 
     while ((xTaskGetTickCount() - start) < timeout) {
@@ -437,6 +443,8 @@ static bool wait_response_for(uint32_t timeout_ms, uint16_t expected_cmd) {
             poll_count = 0;   /* a byte arrived: the line is live, keep polling */
             if (rx_index < sizeof(rx_buffer) - 1) {
                 rx_buffer[rx_index++] = b;
+            } else {
+                rx_overflow = true;
             }
             // Check for end of response (ETX = 0x03)
             if (b == 0x03) {
@@ -495,7 +503,7 @@ static bool wait_response_for(uint32_t timeout_ms, uint16_t expected_cmd) {
                      * STATS: a run with zero checksum errors across a few
                      * thousand frames is the evidence needed to start
                      * discarding bad ones. */
-                    if (have_cks && rx_index > 0) {
+                    if (have_cks && rx_index > 0 && !rx_overflow) {
                         size_t stx = SIZE_MAX;
                         for (size_t k = 0; k < rx_index; k++) {
                             if (rx_buffer[k] == 0x02) stx = k;   /* last STX before ETX */

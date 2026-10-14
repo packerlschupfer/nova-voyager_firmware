@@ -202,17 +202,26 @@ void diagnostics_print_report(void) {
     print_num(diag.protocol_timeout_errors);
     uart_puts("\r\n\r\n");
 
-    // MCB communication health
-    uart_puts("─── MCB Communication ───\r\n");
+    /* MCB communication health.
+     *
+     * These two blocks measure DIFFERENT LAYERS and the labels used not to say
+     * so (review finding, 2026-10-14). "Successful" here means a frame arrived
+     * and matched the command echo, at the wait_response_for() level - it does
+     * NOT mean the caller could use it. So a reply whose payload the caller
+     * then rejected is counted BOTH as successful here and as a frame error
+     * above, which looks contradictory until you know which question each
+     * block is answering. */
+    uart_puts("─── MCB Communication (link layer) ───\r\n");
     uart_puts("Total queries: ");
     print_num(diag.mcb_total_queries);
     uart_puts("\r\n");
-    uart_puts("Successful: ");
+    uart_puts("Frame arrived: ");
     print_num(diag.mcb_comm_success);
     uart_puts("\r\n");
-    uart_puts("Failed: ");
+    uart_puts("No frame: ");
     print_num(diag.mcb_total_queries - diag.mcb_comm_success);
     uart_puts("\r\n");
+    uart_puts("(the block above counts replies the CALLER could not use)\r\n");
 
     if (diag.mcb_total_queries > 0) {
         uint32_t success_rate = (diag.mcb_comm_success * 100) / diag.mcb_total_queries;

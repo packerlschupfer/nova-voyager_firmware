@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 #
 # check-builds.sh — build every environment CI builds, locally.
 #
@@ -19,7 +20,7 @@
 # Run this before pushing. It mirrors .github/workflows/ci.yml's build step.
 #
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "cannot reach the repo root" >&2; exit 1; }
 
 # Keep in step with .github/workflows/ci.yml
 ENVS=(nova_voyager nova_voyager_games nova_voyager_demo debug)
