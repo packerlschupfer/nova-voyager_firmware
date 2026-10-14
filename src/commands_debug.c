@@ -933,7 +933,13 @@ void cmd_jaminfo(void) {
     uart_puts("  sustained    : ");
     uart_puts(jam_on ? "on  " : "off ");
     uart_puts("thr="); print_num(jc.sustained_thresh);
-    uart_puts("% for "); print_num(jc.sustained_ms); uart_puts(" ms\r\n");
+    uart_puts("% for "); print_num(jc.sustained_ms); uart_puts(" ms");
+    if (jc.sustained_from_baseline) {
+        /* The learned idle load is holding this threshold up off free-run, so
+         * it can read higher than the spike tier. Say so, or it looks wrong. */
+        uart_puts(" (held up by the learned baseline)");
+    }
+    uart_puts("\r\n");
     uart_puts("  step (delta) : ");
     uart_puts((jam_on && s->sensor.spike_detect &&
                s->sensor.step_thresh >= JAM_STEP_MIN_THRESH) ? "on  " : "off ");
