@@ -941,8 +941,10 @@ void cmd_jaminfo(void) {
     }
     uart_puts("\r\n");
     uart_puts("  step (delta) : ");
-    uart_puts((jam_on && s->sensor.spike_detect &&
-               s->sensor.step_thresh >= JAM_STEP_MIN_THRESH) ? "on  " : "off ");
+    /* No longer gated on Spike Detect - see jam.c. Its own switch is Step
+     * Thresh, and the master is Jam Detect. */
+    uart_puts((jam_on && s->sensor.step_thresh >= JAM_STEP_MIN_THRESH)
+                ? "on  " : "off ");
     uart_puts("thr=+"); print_num(s->sensor.step_thresh);
     uart_puts("% raw landing >="); print_num(jc.step_abs_floor);
     uart_puts("%, or CV >"); print_num(jc.droop_pct);

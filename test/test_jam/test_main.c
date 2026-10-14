@@ -461,7 +461,10 @@ void test_unacknowledged_jam_persists_through_update(void) {
  * baseline. It still has to be CALLED, because it is what gets the inrush
  * grace out of the way. */
 static void prime_baseline_at(uint8_t baseline_load) {
-    motor_load_motor_started(1000);   // grace=2000ms, stability_required=2000ms
+    /* grace = max(1000 rpm x 1 ms, 500) = 1000 ms; stability = 2000 ms. The
+     * comment here said grace was 2000 ms for a long time; it is not, and the
+     * assertion below is what keeps that from mattering again. */
+    motor_load_motor_started(1000);
     /* MLOAD_AT_TARGET_SAMPLES in-band polls, so the droop gate latches too -
      * a real run spends far more than 8 polls on speed before anything cuts. */
     for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
@@ -469,6 +472,9 @@ static void prime_baseline_at(uint8_t baseline_load) {
     }
     tick_advance(2001);
     motor_load_update(baseline_load, 1000, 1000, true);  // stability complete -> armed
+    /* Every test built on this helper assumes the detectors are actually
+     * reachable afterwards. Say so once, here, instead of in each of them. */
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
     /* Reset the EMA so the next motor_load_update warm-starts at the test
      * value. motor_load.c's `filter_initialized` is a static in the same
      * translation unit (we #include the source), so accessing it directly
@@ -693,8 +699,14 @@ void test_step_without_droop_no_jam(void) {
     TEST_ASSERT_FALSE(emergency_stop_called);
 }
 
-/* A grab is a step the spindle cannot absorb: CV falls out of regulation. */
-void test_step_with_droop_trips_after_confirmation(void) {
+/* A grab is a step the spindle cannot absorb: CV falls out of regulation.
+ *
+ * Note what this does NOT test, despite the name it used to have: 45 and 46
+ * are below JAM_STEP_ABS_FLOOR, so no slam is seen and the trip comes from two
+ * DROOP samples alone - it would pass with step_thr set to 99. The step
+ * threshold's own coverage is test_step_at_high_load_trips_without_droop and
+ * test_still_up_requires_the_absolute_floor_not_just_the_step. */
+void test_droop_under_load_trips_after_confirmation(void) {
     prime_baseline_at(10);
     feed_step(11, 1000, 27);
 
@@ -711,9 +723,14 @@ void test_step_with_droop_trips_after_confirmation(void) {
 }
 
 /* The load rises before the speed sags — spindle inertia — so the step and the
- * droop land in different samples. An AND of the two within one 50 ms poll
- * would have meant the detector never fired on a real grab. */
-void test_grab_trips_when_droop_follows_the_step(void) {
+ * droop land in different samples. An AND of the two within one poll would
+ * have meant the detector never fired on a real grab.
+ *
+ * Since the counters were split, this is specifically the DROOP path reaching
+ * its own two samples while the load climbs; the loads here are all below
+ * JAM_STEP_ABS_FLOOR, so no slam contributes. That separation is the point -
+ * see test_a_droop_sample_cannot_confirm_a_cancelled_slam. */
+void test_grab_trips_when_droop_follows_the_load_rise(void) {
     prime_baseline_at(10);
     feed_step(11, 1000, 27);
     TEST_ASSERT_FALSE(feed_step(45, 1000, 27));   /* step, speed still held */
@@ -766,18 +783,131 @@ void test_still_up_requires_the_absolute_floor_not_just_the_step(void) {
     TEST_ASSERT_FALSE(emergency_stop_called);
 }
 
-/* The OEM detector required both samples to be non-zero. A single KR=0 from
- * the MCB mid-cut otherwise reads as a full-load step on the sample after it. */
-void test_droop_holds_off_until_cv_has_read_something(void) {
-    /* CV=0 against SV=1000 satisfies cv + tol < sv trivially, and the load is
-     * above JAM_GRAB_MIN_LOAD - so without the gate this is an instant "grab"
-     * on every cut of a run whose CV never came up. */
+/* A run whose CV never comes up must not read as a permanent grab: CV=0
+ * against SV=1000 satisfies cv + tol < sv trivially, and the load is above the
+ * grab minimum. Observed for real on 2026-10-13, when every start at SV=500
+ * reported CV=0 for the whole run while the spindle turned.
+ *
+ * This no longer isolates cv_seen_valid specifically - since the arming gate
+ * went banded, CV=0 fails that too, and either one alone is sufficient. The
+ * invariant between them is pinned by the test below instead. */
+void test_a_run_with_no_cv_reading_is_not_a_grab(void) {
     for (int i = 0; i < 10; i++) {
         bool jammed = feed_step(30, 0 /* CV */, 27);
         TEST_ASSERT_FALSE(jammed);
     }
     TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
     TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* cv_seen_valid is now IMPLIED by the at-target gate on the droop path: the
+ * gate will not arm below JAM_CV_VALID_RPM, which is the same threshold that
+ * sets cv_seen_valid. The explicit check is kept because it is free and states
+ * the intent, but the implication is the thing that must not silently break -
+ * these gates have drifted apart from each other once already. (low-load still
+ * needs cv_seen_valid on its own account; nothing implies it there.) */
+void test_at_target_cannot_arm_without_a_valid_cv_reading(void) {
+    motor_load_motor_started(50);     /* SV=50: the 60 rpm floor puts 0 in band */
+    tick_advance(501);
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES * 2; i++) {
+        motor_load_update(30, 0 /* CV */, 50, true);
+        TEST_ASSERT_FALSE(motor_load_at_target_seen());
+    }
+    TEST_ASSERT_FALSE(jam_cv_feedback_seen());
+
+    /* And the moment CV is real, both become true together. */
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        motor_load_update(30, 50, 50, true);
+    }
+    jam_load_update(true, true, true, 95, 27, false, 0);
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+    TEST_ASSERT_TRUE(jam_cv_feedback_seen());
+}
+
+/*===========================================================================*/
+/* 6b-2. Findings from the 2026-10-14 review of the step/droop paths          */
+/*===========================================================================*/
+
+/* The two paths used to share one confirm counter, so a SLAM set it to 1 and
+ * any DROOP sample finished the job - two different claims about two different
+ * samples adding up to a trip neither of them made.
+ *
+ * The case that matters is a breakthrough. 40 -> 82 is a slam; the bit then
+ * breaks through, load collapses to 30, but CV is up to 6 polls stale and
+ * still reports the speed the spindle had while it WAS loaded. Under the shared
+ * counter that collapsed sample confirmed the cancelled slam. */
+void test_a_droop_sample_cannot_confirm_a_cancelled_slam(void) {
+    prime_baseline_at(10);
+    feed_step(40, 1000, 27);
+    TEST_ASSERT_FALSE(feed_step(82, 1000, 27));   /* slam, confirm 1 of 2 */
+    TEST_ASSERT_TRUE(step_pending);
+
+    /* Breakthrough: load gone, CV still reporting the loaded speed. */
+    bool jammed = feed_step(30, 850, 27);
+    TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_FALSE(step_pending);              /* the slam cancelled... */
+    TEST_ASSERT_EQUAL(1, droop_confirm);          /* ...and droop starts at 1 */
+    TEST_ASSERT_EQUAL(0, slam_confirm);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* JAM_GRAB_MIN_LOAD is 25 and free-run KR is 24-25% at 1250 rpm, so the
+ * absolute qualifier admits a spindle pulling nothing at all - and above
+ * 1250 it stops discriminating entirely. Same speed-dependence that broke the
+ * sustained tier, same fix: floor it on the learned baseline. */
+void test_grab_min_load_is_floored_on_the_learned_baseline(void) {
+    prime_baseline_at(25);          /* free-run at 1250 as measured */
+    jam_load_config_t jc;
+    jam_get_load_config(90, &jc);
+    TEST_ASSERT_EQUAL(35, jc.grab_min_load);      /* 25 + 10, not 25 */
+
+    /* A spindle drooping at just-above-free-run load is not grabbing. */
+    for (int i = 0; i < 6; i++) {
+        TEST_ASSERT_FALSE(feed_step(30, 700, 27));
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+
+    /* Real cutting load with the same droop still trips. */
+    TEST_ASSERT_FALSE(feed_step(60, 700, 27));
+    TEST_ASSERT_TRUE(feed_step(61, 700, 27));
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+}
+
+/* A small baseline must not drag the qualifier BELOW the absolute floor. */
+void test_grab_min_load_never_drops_below_the_absolute_floor(void) {
+    prime_baseline_at(5);
+    jam_load_config_t jc;
+    jam_get_load_config(90, &jc);
+    TEST_ASSERT_EQUAL(JAM_GRAB_MIN_LOAD, jc.grab_min_load);   /* 5+10 -> 25 */
+}
+
+/* The raw step delta is the OEM's ONLY load-jam detector; the absolute ceiling
+ * is ours. Hanging the OEM-parity detector off the switch for our addition
+ * meant "Spike Detect off" removed more protection than it names. */
+void test_step_detector_survives_spike_detect_being_off(void) {
+    prime_baseline_at(10);
+    motor_load_update(50, 1000, 1000, true);
+    jam_load_update(true, true, false /* spike OFF */, 95, 27, false, 0);
+    motor_load_update(82, 1000, 1000, true);
+    bool jammed = jam_load_update(true, true, false, 95, 27, false, 0);
+    TEST_ASSERT_FALSE(jammed);                    /* one sample is not enough */
+    motor_load_update(83, 1000, 1000, true);
+    jammed = jam_load_update(true, true, false, 95, 27, false, 0);
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+}
+
+/* ...but Step Thresh 0 still switches it off, and Jam Detect still masters it. */
+void test_step_detector_still_obeys_its_own_switches(void) {
+    prime_baseline_at(10);
+    motor_load_update(50, 1000, 1000, true);
+    jam_load_update(true, true, true, 95, 0 /* StepTh = off */, false, 0);
+    motor_load_update(82, 1000, 1000, true);
+    TEST_ASSERT_FALSE(jam_load_update(true, true, true, 95, 0, false, 0));
+    motor_load_update(83, 1000, 1000, true);
+    TEST_ASSERT_FALSE(jam_load_update(true, true, true, 95, 0, false, 0));
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
 }
 
 /*===========================================================================*/
@@ -813,8 +943,12 @@ void test_speed_step_up_mid_run_is_not_a_grab(void) {
     motor_load_motor_speed_change(1050, 1450);
     TEST_ASSERT_FALSE(motor_load_at_target_seen());
 
-    /* Grace runs out while CV is still the pre-step reading. */
+    /* Grace runs out while CV is still the pre-step reading. Asserted, not
+     * assumed: this lands 1 ms past the deadline, and a test that is still
+     * inside grace passes because NO detector ran - which is exactly how one
+     * of these went vacuous on 2026-10-14. */
     tick_advance(501);
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
 
     for (int i = 0; i < 20; i++) {
         bool jammed = feed_step_sv(29, 1225, 1450, 27);
@@ -1084,13 +1218,20 @@ void test_step_ignores_dropout_sample(void) {
 
 /* A step that collapses on the next sample is not a grab — the bit broke
  * through, or the MCB dropped a reading. Confirmation must cancel. */
-void test_step_cancels_when_load_collapses(void) {
+/* Named for the step path, but 45 is below JAM_STEP_ABS_FLOOR so no step is
+ * ever seen here: what it actually pins down is that a DROOP stops qualifying
+ * once the load falls under the grab minimum. Kept, and renamed to say so -
+ * the slam-cancel case it was credited with is covered by
+ * test_slam_that_collapses_cancels_instead_of_confirming. */
+void test_droop_stops_qualifying_when_the_load_goes_away(void) {
     prime_baseline_at(10);
     feed_step(11, 1000, 27);
-    bool jammed = feed_step(45, 700, 27);    /* qualified step: armed */
+    bool jammed = feed_step(45, 700, 27);    /* drooping at cutting load */
     TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(1, droop_confirm);
     jammed = feed_step(9, 700, 27);          /* load gone, spindle still slow */
     TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(0, droop_confirm);     /* below the grab minimum */
     jammed = feed_step(9, 700, 27);
     TEST_ASSERT_FALSE(jammed);
     TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
@@ -1204,20 +1345,26 @@ int main(void) {
     RUN_TEST(test_sustained_floor_is_not_clamped_to_a_nonsensical_ceiling);
     RUN_TEST(test_unlearned_baseline_falls_back_high_not_low);
     RUN_TEST(test_step_without_droop_no_jam);
-    RUN_TEST(test_step_with_droop_trips_after_confirmation);
-    RUN_TEST(test_grab_trips_when_droop_follows_the_step);
+    RUN_TEST(test_droop_under_load_trips_after_confirmation);
+    RUN_TEST(test_grab_trips_when_droop_follows_the_load_rise);
     RUN_TEST(test_step_at_high_load_trips_without_droop);
     RUN_TEST(test_slam_that_collapses_cancels_instead_of_confirming);
+    RUN_TEST(test_a_droop_sample_cannot_confirm_a_cancelled_slam);
+    RUN_TEST(test_grab_min_load_is_floored_on_the_learned_baseline);
+    RUN_TEST(test_grab_min_load_never_drops_below_the_absolute_floor);
+    RUN_TEST(test_step_detector_survives_spike_detect_being_off);
+    RUN_TEST(test_step_detector_still_obeys_its_own_switches);
     RUN_TEST(test_still_up_requires_the_absolute_floor_not_just_the_step);
     RUN_TEST(test_step_ignores_dropout_sample);
-    RUN_TEST(test_step_cancels_when_load_collapses);
+    RUN_TEST(test_droop_stops_qualifying_when_the_load_goes_away);
     RUN_TEST(test_step_threshold_zero_disables_detector);
     RUN_TEST(test_spike_trips_with_unarmed_baseline);
 
     /* CV credibility */
     RUN_TEST(test_low_load_holds_off_until_cv_has_read_something);
     RUN_TEST(test_low_load_trips_once_cv_has_been_valid);
-    RUN_TEST(test_droop_holds_off_until_cv_has_read_something);
+    RUN_TEST(test_a_run_with_no_cv_reading_is_not_a_grab);
+    RUN_TEST(test_at_target_cannot_arm_without_a_valid_cv_reading);
     RUN_TEST(test_speed_step_up_mid_run_is_not_a_grab);
     RUN_TEST(test_droop_arms_once_the_new_speed_is_reached);
     RUN_TEST(test_spin_up_under_cutting_load_is_not_a_grab);

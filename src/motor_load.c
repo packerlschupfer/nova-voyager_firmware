@@ -487,7 +487,11 @@ void motor_load_trace_reset(void) {
     trace_origin = MLOAD_TRACE_LIVE;
     trace_rebooted = false;
     trace_seen = false;
-    trace_prev_tick = 0;
+    /* HAL_GetTick(), not 0: this function runs on the console task while the
+     * motor task may push between its stores, and a dt measured against 0
+     * would saturate and flag a bogus gap on the next sample. "Now" is the
+     * right answer for a buffer that starts here anyway. */
+    trace_prev_tick = HAL_GetTick();
 }
 
 void motor_load_trace_mark_read(void) {
