@@ -545,8 +545,36 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
         /* Same gate, and here it matters more: with CV still at 0 during
          * spin-up, cv + tol < sv is trivially true, so every cut that reached
          * JAM_GRAB_MIN_LOAD would read as a grab. The raw-step path below does
-         * not use CV and still covers this window. */
+         * not use CV and still covers this window.
+         *
+         * motor_load_at_target_seen() is the second, stronger gate: the
+         * spindle must have REACHED the commanded speed at least once since
+         * the last start or speed change. "CV is below SV" only means a grab
+         * if the spindle had the speed and lost it; during any ramp it is just
+         * a ramp.
+         *
+         * This cost a real emergency stop on 2026-10-14 (flight recorder,
+         * tick 83791). The operator swept the dial 1250 -> 1050 -> 1450 while
+         * drilling. Inrush grace after the step-up is max(delta, 500) = 500 ms,
+         * the grace flag went clear 5 polls later, and the newest CV reading
+         * available was 1225 - taken before the step, and CV only refreshes
+         * every ~6 polls. 1225 + 145 < 1450 with KR at 29%: two samples, trip.
+         * The spindle was accelerating perfectly normally the whole time.
+         *
+         * The same hole was one point of load away from stopping the spin-up
+         * that started that very run: at 1250 rpm commanded, grace expires
+         * after 1250 ms, and CV was still 137 rpm short of target at 1113 with
+         * KR at 24%. JAM_GRAB_MIN_LOAD is 25. That is the "it tripped as I
+         * started drilling" case, and no threshold tuning fixes it - the
+         * comparison itself was being made at a time when it has no meaning.
+         *
+         * Why a gate and not a longer grace: grace is a guess at how long the
+         * ramp takes. Measured here, a 1250 rpm start needs ~2.6 s to settle
+         * while grace allows 1250 ms, and the right number depends on the
+         * MCB's ramp setting, the load and the inertia of whatever is in the
+         * chuck. Reaching the setpoint is not a guess. */
         const bool drooping = cv_seen_valid &&
+                              motor_load_at_target_seen() &&
                               spindle_out_of_regulation(cv_now, sv_now) &&
                               (raw >= JAM_GRAB_MIN_LOAD);
 

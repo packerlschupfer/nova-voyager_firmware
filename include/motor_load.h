@@ -90,6 +90,21 @@ bool motor_load_get_baseline(uint8_t *out);
 /** @return true if the inrush-grace deadline has not passed. */
 bool motor_load_in_spike_grace(void);
 
+/**
+ * @brief Has the spindle actually REACHED the speed it was last commanded?
+ *
+ * True once CV has come within the baseline window of the current SV at least
+ * once since the last motor start or speed change; false again the instant the
+ * setpoint moves in either direction.
+ *
+ * This is what makes "CV is under SV" mean something. During a ramp CV is
+ * legitimately under SV, so a time-based grace window is a guess at how long
+ * the ramp takes - and the guess was wrong on the real machine (see jam.c's
+ * droop path). Having reached the setpoint once is not a guess: it is the
+ * precondition for the sentence "the spindle LOST the speed it was holding".
+ */
+bool motor_load_at_target_seen(void);
+
 typedef struct {
     uint8_t  filtered_load;
     uint8_t  baseline;
@@ -132,6 +147,7 @@ void motor_load_get_debug(motor_load_debug_t *out);
 
 #define MLOAD_TRACE_F_ARMED  0x01   /* baseline was armed for this sample */
 #define MLOAD_TRACE_F_GRACE  0x02   /* inrush grace still active (detectors muted) */
+#define MLOAD_TRACE_F_ATTGT  0x04   /* CV had reached SV at least once by here */
 
 typedef struct {
     uint8_t  kr;        /* raw KR sample as fed to motor_load_update() */
@@ -173,6 +189,21 @@ bool motor_load_trace_is_frozen(void);
 
 /** @return HAL tick at which the trace was frozen, 0 if never. */
 uint32_t motor_load_trace_frozen_at(void);
+
+/**
+ * @brief Measured spacing of the recorded samples, in ms.
+ *
+ * The trace is written once per motor poll, and the poll is NOT the nominal
+ * MOTOR_STATUS_POLL_RUNNING_MS: four 9600-baud queries per cycle (GF, SV, CV,
+ * KR) cannot fit in 50 ms, so every t_ms column printed from the nominal rate
+ * understates real elapsed time. Reading thresholds in milliseconds off that
+ * column was giving the wrong answer, so the recorder measures itself.
+ *
+ * @param[out] min_ms  Shortest observed gap, 0 if fewer than two samples.
+ * @param[out] max_ms  Longest observed gap, capped at 255.
+ * @param[out] last_ms Most recent gap.
+ */
+void motor_load_trace_period(uint8_t *min_ms, uint8_t *max_ms, uint8_t *last_ms);
 
 /** @return number of samples held, 0..MLOAD_TRACE_LEN. */
 uint16_t motor_load_trace_count(void);

@@ -675,6 +675,124 @@ void test_droop_holds_off_until_cv_has_read_something(void) {
     TEST_ASSERT_FALSE(emergency_stop_called);
 }
 
+/*===========================================================================*/
+/* 6c. The droop path needs the spindle to have REACHED the setpoint          */
+/*===========================================================================*/
+
+/* Same idea as feed_step(), but the commanded speed is the caller's - these
+ * tests are about what happens when SV moves. */
+static bool feed_step_sv(uint8_t raw, uint16_t cv, uint16_t sv, uint8_t step_thr) {
+    motor_load_update(raw, cv, sv, true);
+    return jam_load_update(true, true, true, 95, step_thr,
+                           false /* low-load disabled */, 0);
+}
+
+/* THE REGRESSION THIS WAS WRITTEN FOR, from the machine's own flight recorder
+ * (trip at tick 83791, 2026-10-14). Running at 1250 with the baseline armed,
+ * the operator swept the speed dial 1250 -> 1050 -> 1450 mid-cut. Grace after
+ * the step-up is max(delta, 500) = 500 ms and expired 5 polls later; the
+ * newest CV available was 1225, taken BEFORE the step and ~6 polls stale.
+ * 1225 + 145 < 1450 at KR 29% gave two qualified samples and an emergency
+ * stop, with the spindle accelerating normally the whole time. */
+void test_speed_step_up_mid_run_is_not_a_grab(void) {
+    motor_load_motor_started(1250);
+    motor_load_update(25, 1250, 1250, true);
+    tick_advance(2001);
+    motor_load_update(25, 1250, 1250, true);
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+
+    /* Dial sweep: down 200, then up 400. */
+    motor_load_motor_speed_change(1250, 1050);
+    motor_load_motor_speed_change(1050, 1450);
+    TEST_ASSERT_FALSE(motor_load_at_target_seen());
+
+    /* Grace runs out while CV is still the pre-step reading. */
+    tick_advance(501);
+
+    for (int i = 0; i < 20; i++) {
+        bool jammed = feed_step_sv(29, 1225, 1450, 27);
+        TEST_ASSERT_FALSE(jammed);
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* ...and the detector comes back the moment the spindle is actually there, so
+ * the gate is a delay until the comparison is meaningful, not a hole. */
+void test_droop_arms_once_the_new_speed_is_reached(void) {
+    motor_load_motor_started(1250);
+    motor_load_update(25, 1250, 1250, true);
+    motor_load_motor_speed_change(1250, 1450);
+    /* Past the START grace too, not just the speed-change grace: a step-up
+     * only ever EXTENDS the deadline, so the 1250 ms from the start is what
+     * has to expire here before any detector is live. */
+    tick_advance(1251);
+
+    /* Ramp: under speed, real cutting load, no trip. */
+    for (int i = 0; i < 10; i++) {
+        TEST_ASSERT_FALSE(feed_step_sv(30, 1250, 1450, 27));
+    }
+    /* Arrives at the new setpoint. */
+    TEST_ASSERT_FALSE(feed_step_sv(30, 1445, 1450, 27));
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+
+    /* NOW it loses the speed under load: that is a grab. */
+    TEST_ASSERT_FALSE(feed_step_sv(45, 1200, 1450, 27));   /* sample 1 */
+    bool jammed = feed_step_sv(46, 1180, 1450, 27);        /* sample 2 */
+    TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+}
+
+/* The "it tripped as I started the drill" case. Spin-up to 1250 took ~2.6 s on
+ * the machine; grace allows max(1250, 500) = 1250 ms. Past that the spindle is
+ * still ~140 rpm short and climbing, and the recorded KR was 24% against a
+ * JAM_GRAB_MIN_LOAD of 25 - one point from an emergency stop at the moment the
+ * bit touches the work. Feeding it at 30% is that run with a slightly heavier
+ * bit, and it must survive the whole ramp. */
+void test_spin_up_under_cutting_load_is_not_a_grab(void) {
+    motor_load_motor_started(1250);
+    tick_advance(1251);                      /* inrush grace is over */
+
+    const uint16_t ramp[] = {0, 22, 601, 900, 1113, 1150, 1193, 1222, 1238, 1247};
+    for (unsigned i = 0; i < sizeof(ramp)/sizeof(ramp[0]); i++) {
+        bool jammed = feed_step_sv(30, ramp[i], 1250, 27);
+        TEST_ASSERT_FALSE(jammed);
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* A step DOWN also clears the gate. CV sitting above the new SV is not droop,
+ * but it is not evidence of regulation either - and the next step up must not
+ * inherit it. */
+void test_speed_step_down_clears_the_at_target_gate(void) {
+    motor_load_motor_started(1000);
+    motor_load_update(25, 1000, 1000, true);
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+    motor_load_motor_speed_change(1000, 600);
+    TEST_ASSERT_FALSE(motor_load_at_target_seen());
+}
+
+/* The arming window (+/-5%, floor 25 rpm) is tighter than the droop trip
+ * window (+/-10%, floor 60 rpm) on purpose: a CV good enough to arm the gate
+ * is by construction inside the no-trip band, so a stale reading from a nearby
+ * old setpoint cannot arm straight into a trip. */
+void test_arming_window_is_tighter_than_the_trip_window(void) {
+    motor_load_motor_started(1000);
+    motor_load_update(30, 1000, 1000, true);
+    motor_load_motor_speed_change(1000, 1040);   /* 4% - within arming tol */
+    tick_advance(1001);                          /* clear the start grace */
+
+    /* The stale CV=1000 arms the gate against SV=1040... */
+    bool jammed = feed_step_sv(30, 1000, 1040, 27);
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+    TEST_ASSERT_FALSE(jammed);
+    /* ...and is still nowhere near out of regulation, twice over. */
+    jammed = feed_step_sv(30, 1000, 1040, 27);
+    TEST_ASSERT_FALSE(jammed);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+}
+
 /* A trace recovered from .noinit comes back frozen. It must not then suppress
  * recording of the run the operator just started - that cost a deliberate
  * capture on 2026-10-13. A trip-frozen trace still survives a restart. */
@@ -885,6 +1003,11 @@ int main(void) {
     RUN_TEST(test_low_load_holds_off_until_cv_has_read_something);
     RUN_TEST(test_low_load_trips_once_cv_has_been_valid);
     RUN_TEST(test_droop_holds_off_until_cv_has_read_something);
+    RUN_TEST(test_speed_step_up_mid_run_is_not_a_grab);
+    RUN_TEST(test_droop_arms_once_the_new_speed_is_reached);
+    RUN_TEST(test_spin_up_under_cutting_load_is_not_a_grab);
+    RUN_TEST(test_speed_step_down_clears_the_at_target_gate);
+    RUN_TEST(test_arming_window_is_tighter_than_the_trip_window);
 
     /* Flight recorder */
     RUN_TEST(test_reset_recovered_trace_yields_to_a_new_run);
