@@ -777,9 +777,25 @@ void cmd_jamtrace(void) {
 
     uart_puts("JAMTRACE: ");
     print_num(n);
-    uart_puts(" samples, ");
+    uart_puts(" samples, t_ms from the nominal ");
     print_num(MOTOR_STATUS_POLL_RUNNING_MS);
-    uart_puts(" ms apart, oldest first\r\n");
+    uart_puts(" ms poll, oldest first\r\n");
+
+    /* The real poll is slower than nominal - four 9600-baud queries per cycle
+     * do not fit in 50 ms - so t_ms is an index, not a clock. Print what the
+     * recorder measured, because every threshold argued in milliseconds off
+     * this trace depends on it. */
+    uint8_t dt_min = 0, dt_max = 0, dt_last = 0;
+    motor_load_trace_period(&dt_min, &dt_max, &dt_last);
+    if (dt_max > 0) {
+        uart_puts("  measured poll ");
+        print_num(dt_min); uart_puts("-"); print_num(dt_max);
+        uart_puts(" ms (last "); print_num(dt_last);
+        uart_puts(") - scale t_ms by ");
+        print_num(dt_last); uart_puts("/");
+        print_num(MOTOR_STATUS_POLL_RUNNING_MS);
+        uart_puts(" for real time\r\n");
+    }
 
     if (motor_load_trace_is_frozen()) {
         switch (motor_load_trace_origin()) {
@@ -807,7 +823,7 @@ void cmd_jamtrace(void) {
         return;
     }
 
-    uart_puts("t_ms,KR,dKR,filt,base,CV,SV,armed,grace\r\n");
+    uart_puts("t_ms,KR,dKR,filt,base,CV,SV,armed,grace,attgt\r\n");
 
     motor_load_trace_entry_t e;
     uint8_t prev_kr = 0;
@@ -828,7 +844,8 @@ void cmd_jamtrace(void) {
         print_num(e.cv);                                     uart_puts(",");
         print_num(e.sv);                                     uart_puts(",");
         print_num((e.flags & MLOAD_TRACE_F_ARMED) ? 1 : 0);  uart_puts(",");
-        print_num((e.flags & MLOAD_TRACE_F_GRACE) ? 1 : 0);
+        print_num((e.flags & MLOAD_TRACE_F_GRACE) ? 1 : 0);  uart_puts(",");
+        print_num((e.flags & MLOAD_TRACE_F_ATTGT) ? 1 : 0);
         uart_puts("\r\n");
 
         prev_kr = e.kr;
@@ -879,6 +896,12 @@ void cmd_jaminfo(void) {
         uart_puts("ok\r\n");
     } else {
         uart_puts("not seen this run - low-load and droop standing down\r\n");
+    }
+    uart_puts("  at target = ");
+    if (motor_load_at_target_seen()) {
+        uart_puts("yes - droop armed\r\n");
+    } else {
+        uart_puts("NO (ramping or speed just changed) - droop standing down\r\n");
     }
     uart_puts("Triggers:\r\n");
     /* REVIEW FIX (MEDIUM): both of these lines derived from spike_detect

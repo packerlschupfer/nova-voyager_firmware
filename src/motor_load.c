@@ -39,6 +39,7 @@ static uint32_t stable_since = 0;           // HAL_GetTick when CV first entered
 static uint32_t stability_required_ms = 0;
 static uint16_t last_cv = 0;              // CV that came with the last sample
 static uint16_t last_sv = 0;              // SV that came with the last sample
+static bool     cv_at_target = false;     // CV reached the current SV at least once
 
 /* Jam flight recorder — see motor_load.h. Written once per poll from the motor
  * task, read from the console task via motor_load_trace_get(). Both run under
@@ -65,6 +66,13 @@ MLOAD_NOINIT static bool     trace_frozen;
 MLOAD_NOINIT static uint32_t trace_frozen_tick;
 MLOAD_NOINIT static uint8_t  trace_origin;      /* motor_load_trace_origin_t */
 
+/* Measured sample spacing. The t_ms column is printed from the NOMINAL poll
+ * rate, and the real one is longer - see motor_load_trace_period(). */
+MLOAD_NOINIT static uint32_t trace_prev_tick;
+MLOAD_NOINIT static uint8_t  trace_dt_min;
+MLOAD_NOINIT static uint8_t  trace_dt_max;
+MLOAD_NOINIT static uint8_t  trace_dt_last;
+
 /* Set at boot, so .bss is right: it describes THIS boot's recovery, and must
  * not itself survive into the next one. */
 static bool trace_rebooted = false;
@@ -85,12 +93,24 @@ static void trace_push(uint8_t kr, uint16_t cv, uint16_t sv) {
     e->kr       = kr;
     e->filtered = filtered_load;
     e->flags    = (uint8_t)((baseline_armed ? MLOAD_TRACE_F_ARMED : 0) |
-                            (motor_load_in_spike_grace() ? MLOAD_TRACE_F_GRACE : 0));
+                            (motor_load_in_spike_grace() ? MLOAD_TRACE_F_GRACE : 0) |
+                            (cv_at_target ? MLOAD_TRACE_F_ATTGT : 0));
     e->baseline = load_baseline;
     e->cv       = cv;
     e->sv       = sv;
     trace_head = (uint16_t)((trace_head + 1) % MLOAD_TRACE_LEN);
     if (trace_count < MLOAD_TRACE_LEN) trace_count++;
+
+    /* Measure our own cadence. One sample has no gap to measure yet. */
+    const uint32_t now = HAL_GetTick();
+    if (trace_count > 1) {
+        uint32_t dt = now - trace_prev_tick;
+        if (dt > 255) dt = 255;
+        trace_dt_last = (uint8_t)dt;
+        if (trace_dt_min == 0 || dt < trace_dt_min) trace_dt_min = (uint8_t)dt;
+        if (dt > trace_dt_max) trace_dt_max = (uint8_t)dt;
+    }
+    trace_prev_tick = now;
 }
 
 static uint32_t grace_for_delta(uint16_t delta_rpm) {
@@ -143,6 +163,7 @@ void motor_load_init(void) {
     spike_grace_end = 0;
     stable_since = 0;
     stability_required_ms = 0;
+    cv_at_target = false;
 }
 
 void motor_load_motor_started(uint16_t target_rpm) {
@@ -177,6 +198,7 @@ void motor_load_motor_started(uint16_t target_rpm) {
     load_baseline = 0;
     baseline_armed = false;
     stable_since = 0;
+    cv_at_target = false;
 }
 
 void motor_load_motor_speed_change(uint16_t old_target, uint16_t new_target) {
@@ -199,11 +221,17 @@ void motor_load_motor_speed_change(uint16_t old_target, uint16_t new_target) {
     load_baseline = 0;
     stable_since = 0;
     stability_required_ms = stability_for_delta(delta);
+    /* ...and it invalidates "the spindle is holding its speed". Both
+     * directions: a step DOWN leaves CV above the new SV (no droop, but also
+     * no longer evidence of regulation), and a step UP leaves CV below it,
+     * which is precisely the false grab this gate exists to stop. */
+    cv_at_target = false;
 }
 
 void motor_load_motor_stopped(void) {
     last_cv = 0;
     last_sv = 0;
+    cv_at_target = false;
     spike_grace_end = 0;
     stable_since = 0;
     stability_required_ms = 0;
@@ -229,6 +257,7 @@ void motor_load_update(uint8_t raw_load, uint16_t cv, uint16_t sv, bool is_runni
         baseline_armed = false;
         load_baseline = 0;
         stable_since = 0;
+        cv_at_target = false;
         return;
     }
 
@@ -252,22 +281,37 @@ void motor_load_update(uint8_t raw_load, uint16_t cv, uint16_t sv, bool is_runni
                                    + raw_load + (MLOAD_EMA_ALPHA / 2)) / MLOAD_EMA_ALPHA);
     }
 
-    if (!baseline_armed && sv > 0) {
+    if (sv > 0) {
         uint16_t tol = (uint16_t)(((uint32_t)sv * MLOAD_BASELINE_CV_TOL_PCT) / 100);
         if (tol < 25) tol = 25;
         uint16_t lo = (sv > tol) ? (uint16_t)(sv - tol) : 0;
         uint16_t hi = (uint16_t)(sv + tol);
         bool in_window = (cv >= lo) && (cv <= hi);
-        if (in_window) {
-            uint32_t now_ms = HAL_GetTick();
-            if (stable_since == 0) {
-                stable_since = now_ms;
-            } else if ((now_ms - stable_since) >= stability_required_ms) {
-                load_baseline = filtered_load;
-                baseline_armed = true;
+
+        /* Latching: reaching the setpoint is a fact about this operating
+         * point, and it stays true until the setpoint moves. The jam droop
+         * path needs "did it ever get there", not "is it there now" - the
+         * second question is the one it is trying to answer.
+         *
+         * This window (±5%, floor 25 rpm) is deliberately TIGHTER than the
+         * droop trip window (±10%, floor 60 rpm), so any CV that arms this
+         * gate is by construction well inside the no-trip band. A stale CV
+         * left over from a nearby old setpoint therefore cannot arm the gate
+         * into an immediate trip. */
+        if (in_window) cv_at_target = true;
+
+        if (!baseline_armed) {
+            if (in_window) {
+                uint32_t now_ms = HAL_GetTick();
+                if (stable_since == 0) {
+                    stable_since = now_ms;
+                } else if ((now_ms - stable_since) >= stability_required_ms) {
+                    load_baseline = filtered_load;
+                    baseline_armed = true;
+                }
+            } else {
+                stable_since = 0;
             }
-        } else {
-            stable_since = 0;
         }
     }
 
@@ -315,6 +359,16 @@ bool motor_load_in_spike_grace(void) {
     return (int32_t)(spike_grace_end - HAL_GetTick()) > 0;
 }
 
+bool motor_load_at_target_seen(void) {
+    return cv_at_target;
+}
+
+void motor_load_trace_period(uint8_t *min_ms, uint8_t *max_ms, uint8_t *last_ms) {
+    if (min_ms)  *min_ms  = trace_dt_min;
+    if (max_ms)  *max_ms  = trace_dt_max;
+    if (last_ms) *last_ms = trace_dt_last;
+}
+
 void motor_load_get_debug(motor_load_debug_t *out) {
     if (!out) return;
     uint32_t now = HAL_GetTick();
@@ -347,6 +401,10 @@ void motor_load_trace_reset(void) {
     trace_origin = MLOAD_TRACE_LIVE;
     trace_rebooted = false;
     trace_seen = false;
+    trace_prev_tick = 0;
+    trace_dt_min = 0;
+    trace_dt_max = 0;
+    trace_dt_last = 0;
 }
 
 void motor_load_trace_mark_read(void) {
