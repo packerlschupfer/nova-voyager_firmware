@@ -596,6 +596,77 @@ void test_load_jam_timer_resets_when_load_drops(void) {
 }
 
 /*===========================================================================*/
+/* 6a-2. The sustained tier may not sit below what the machine idles at       */
+/*===========================================================================*/
+
+/* THE REGRESSION THIS WAS WRITTEN FOR (review finding, 2026-10-14):
+ * spike_thresh is settable down to 20, and `spike - 15` put the lowest menu
+ * positions at 5/10/14% - below this machine's free-run KR (15-16% at 750 rpm,
+ * 24-25% at 1250). Spike Thresh 20 therefore emergency-stopped an IDLE spindle
+ * 5 s after start. */
+void test_sustained_tier_cannot_trip_at_free_run_load(void) {
+    prime_baseline_at(25);          /* free-run baseline as measured at 1250 */
+    uint8_t b = 0;
+    TEST_ASSERT_TRUE(motor_load_get_baseline(&b));
+    TEST_ASSERT_EQUAL(25, b);
+
+    /* Operator winds Spike Thresh to the bottom of its range. */
+    for (int i = 0; i < 10; i++) {
+        bool jammed = feed_load(25, true, true, false, 20);
+        TEST_ASSERT_FALSE(jammed);
+        tick_advance(1000);        /* well past JAM_LOAD_TIMEOUT_MS in total */
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* The baseline floor is a max(), so it can only ever push the threshold UP.
+ * At the factory setting it must not move it at all - that is what keeps this
+ * from being the min() that c1e624e removed. */
+void test_baseline_floor_does_not_move_the_factory_threshold(void) {
+    prime_baseline_at(25);
+    jam_load_config_t jc;
+    jam_get_load_config(90, &jc);
+    TEST_ASSERT_EQUAL(90, jc.spike_thresh);
+    TEST_ASSERT_EQUAL(75, jc.sustained_thresh);   /* 90 - 15, unchanged */
+
+    /* ...and a real sustained overload still trips. */
+    TEST_ASSERT_FALSE(feed_load(92, true, true, false, 90));
+    tick_advance(JAM_LOAD_TIMEOUT_MS + 1);
+    TEST_ASSERT_TRUE(feed_load(92, true, true, false, 90));
+    TEST_ASSERT_EQUAL(JAM_LOAD_SUSTAINED, jam_get_status()->type);
+}
+
+/* The floor is deliberately NOT clamped to the spike ceiling. Clamping was
+ * tried first and reopened the bug: the sustained tier is gated on jam_detect
+ * alone, so with Spike Detect off it is the only tier left, and a clamp put it
+ * back below free-run. An inverted pair is fine - each tier means what it
+ * says, and the lower one fires first when it is enabled. */
+void test_sustained_floor_is_not_clamped_to_a_nonsensical_ceiling(void) {
+    prime_baseline_at(60);          /* a big tool idling heavy */
+    jam_load_config_t jc;
+    jam_get_load_config(50, &jc);
+    TEST_ASSERT_EQUAL(50, jc.spike_thresh);
+    TEST_ASSERT_EQUAL(80, jc.sustained_thresh);   /* 60 + 20, above spike */
+}
+
+/* While the baseline is still learning there is no measurement to floor on, so
+ * it falls back to the factory relationship rather than to a low setting. */
+void test_unlearned_baseline_falls_back_high_not_low(void) {
+    motor_load_motor_started(1000);
+    uint8_t b = 0;
+    TEST_ASSERT_FALSE(motor_load_get_baseline(&b));
+
+    jam_load_config_t jc;
+    jam_get_load_config(20, &jc);
+    /* JAM_LOAD_THRESHOLD - margin = 75, NOT 5. */
+    TEST_ASSERT_EQUAL(75, jc.sustained_thresh);
+
+    jam_get_load_config(90, &jc);
+    TEST_ASSERT_EQUAL(75, jc.sustained_thresh);
+}
+
+/*===========================================================================*/
 /* 6b. Step detector — the qualifiers added 2026-10-13                        */
 /*===========================================================================*/
 
@@ -1128,6 +1199,10 @@ int main(void) {
     RUN_TEST(test_load_jam_timer_resets_when_load_drops);
 
     /* Step detector qualifiers */
+    RUN_TEST(test_sustained_tier_cannot_trip_at_free_run_load);
+    RUN_TEST(test_baseline_floor_does_not_move_the_factory_threshold);
+    RUN_TEST(test_sustained_floor_is_not_clamped_to_a_nonsensical_ceiling);
+    RUN_TEST(test_unlearned_baseline_falls_back_high_not_low);
     RUN_TEST(test_step_without_droop_no_jam);
     RUN_TEST(test_step_with_droop_trips_after_confirmation);
     RUN_TEST(test_grab_trips_when_droop_follows_the_step);

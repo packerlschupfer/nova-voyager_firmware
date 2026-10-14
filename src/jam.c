@@ -216,10 +216,58 @@ static uint8_t effective_spike_thresh(uint8_t setting) {
     return (setting >= JAM_SPIKE_MIN_THRESH) ? setting : JAM_LOAD_THRESHOLD;
 }
 
-static uint8_t effective_sustained_thresh(uint8_t eff_spike) {
-    return (eff_spike > JAM_SUSTAINED_MARGIN_PCT)
-             ? (uint8_t)(eff_spike - JAM_SUSTAINED_MARGIN_PCT)
-             : eff_spike;
+/* The sustained tier sits a fixed margin below the operator's ceiling - but
+ * never below a load the machine reaches on its own, or it stops an idle
+ * spindle.
+ *
+ * REVIEW FINDING 2026-10-14: spike_thresh is settable down to 20, and
+ * `spike - 15` put the three lowest menu positions at 5/10/14%. Free-run KR on
+ * this machine is 15-16% at 750 rpm and 24-25% at 1250, so Spike Thresh 20
+ * meant JAM_LOAD_SUSTAINED emergency-stopping a spindle that was touching
+ * nothing, 5 s after start.
+ *
+ * No fixed floor fixes that, because free-run load SCALES WITH SPEED - the two
+ * figures above are the same machine, same tool, 500 rpm apart. The number
+ * that does track it is the one the machine already measures: the learned idle
+ * baseline. So the baseline becomes a FLOOR on this threshold.
+ *
+ * What keeps this from reintroducing the problem c1e624e removed: that one was
+ * `min(baseline + delta, setting)`, which let the baseline drag the trip point
+ * DOWN and made Spike Thresh unable to relax anything - no setting existed
+ * that let a hole saw finish a cut. This is a max(): the baseline can only ever
+ * push the threshold UP, away from a trip. It cannot cause a stop, only
+ * prevent one.
+ *
+ * The result may legitimately end up ABOVE the spike ceiling, and it is not
+ * clamped to it. Clamping was the first thing tried and it was wrong: the
+ * sustained tier is gated on jam_detect alone, so with Spike Detect off it is
+ * the only tier left, and clamping put its threshold back below free-run -
+ * the idle spindle stopped again. An "inverted" pair is not a problem: each
+ * tier is independently meaningful, and where spike is the lower of the two
+ * and enabled, it simply fires first.
+ *
+ * While the baseline is still learning there is no measurement, so fall back
+ * to the factory relationship (JAM_LOAD_THRESHOLD - margin = 75) rather than
+ * to the operator's possibly-nonsensical low setting. Conservative here means
+ * HIGHER. */
+#define JAM_SUSTAINED_BASELINE_MARGIN 20
+
+static uint8_t effective_sustained_thresh(uint8_t eff_spike, bool *from_baseline) {
+    uint16_t from_setting = (eff_spike > JAM_SUSTAINED_MARGIN_PCT)
+                              ? (uint16_t)(eff_spike - JAM_SUSTAINED_MARGIN_PCT)
+                              : eff_spike;
+
+    uint8_t baseline = 0;
+    uint16_t floor_pct = (uint16_t)(JAM_LOAD_THRESHOLD - JAM_SUSTAINED_MARGIN_PCT);
+    if (motor_load_get_baseline(&baseline)) {
+        floor_pct = (uint16_t)baseline + JAM_SUSTAINED_BASELINE_MARGIN;
+    }
+
+    const bool floored = (floor_pct > from_setting);
+    uint16_t eff = floored ? floor_pct : from_setting;
+    if (eff > 100) eff = 100;
+    if (from_baseline) *from_baseline = floored;
+    return (uint8_t)eff;
 }
 
 bool jam_cv_feedback_seen(void) {
@@ -229,7 +277,8 @@ bool jam_cv_feedback_seen(void) {
 void jam_get_load_config(uint8_t spike_threshold, jam_load_config_t *out) {
     if (!out) return;
     out->spike_thresh     = effective_spike_thresh(spike_threshold);
-    out->sustained_thresh = effective_sustained_thresh(out->spike_thresh);
+    out->sustained_thresh = effective_sustained_thresh(out->spike_thresh,
+                                                       &out->sustained_from_baseline);
     out->sustained_ms     = JAM_LOAD_TIMEOUT_MS;
     out->droop_pct        = JAM_DROOP_PCT;
     out->droop_min_rpm    = JAM_DROOP_MIN_RPM;
@@ -647,7 +696,7 @@ bool jam_load_update(bool is_running, bool jam_detect_enabled,
      * excursion to just under the limit is normal cutting, the same load held
      * for JAM_LOAD_TIMEOUT_MS is not. */
     uint8_t spike_thresh_eff = effective_spike_thresh(spike_threshold);
-    uint8_t sustained_thresh = effective_sustained_thresh(spike_thresh_eff);
+    uint8_t sustained_thresh = effective_sustained_thresh(spike_thresh_eff, NULL);
 
     if (spike_detect_enabled && !in_inrush && filtered >= spike_thresh_eff) {
         trigger_jam(JAM_LOAD_SPIKE, 0);

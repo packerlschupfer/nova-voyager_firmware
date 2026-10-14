@@ -180,6 +180,11 @@ typedef struct {
     uint8_t  grab_min_load;      /* (c) droop below this load is not a grab */
     uint8_t  step_abs_floor;     /* (c) a step landing here trips on its own */
     uint8_t  step_confirm;       /* (c) consecutive qualified samples needed */
+    /* (b) true when the learned-baseline floor, not `spike - margin`, is what
+     * set sustained_thresh. Worth showing: it is the case where the sustained
+     * threshold can legitimately read HIGHER than the spike one, which looks
+     * like a bug until you know the baseline is holding it up off free-run. */
+    bool     sustained_from_baseline;
 } jam_load_config_t;
 
 /**
