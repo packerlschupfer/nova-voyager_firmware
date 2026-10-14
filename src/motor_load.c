@@ -7,6 +7,9 @@
  */
 
 #include "motor_load.h"
+/* For the shared spindle-regulation band: the at-target gate must arm on
+ * exactly the band jam.c's droop detector trips on. See jam.h. */
+#include "jam.h"
 
 // Two-tier load characterization parameters.
 //
@@ -24,8 +27,28 @@
 #define MLOAD_STABLE_FLOOR_MS     2000
 #define MLOAD_STABLE_PER_RPM_MS      1
 
-// CV must be within ±MLOAD_BASELINE_CV_TOL_PCT of SV to count as "at target".
+// CV must be within ±MLOAD_BASELINE_CV_TOL_PCT of SV for the BASELINE to arm.
+// This is the "is the load reading trustworthy" window, and is intentionally
+// tighter than the regulation band in jam.h.
 #define MLOAD_BASELINE_CV_TOL_PCT    5
+
+/* Consecutive in-band samples before the at-target gate latches.
+ *
+ * Counted in POLLS, not milliseconds, on purpose. The MCB refreshes CV about
+ * every 6 polls - measured on the flight recorder, where CV repeats 6 times
+ * per change - so the dwell has to outlast one refresh or a STALE CV can arm
+ * the gate on its own. Counting polls stays proportional to the refresh
+ * whatever the real poll period turns out to be, and the real period is not
+ * the nominal 50 ms (four 9600-baud queries do not fit in it).
+ *
+ * This is the second half of the 2026-10-14 fix. The first half cleared the
+ * gate on a speed change; it did not stop the very next poll re-arming it from
+ * the pre-change reading. Sweep the dial 1250 -> 1050 -> 1250 and the stale CV
+ * of 1240 is inside the band for 1250, so the gate armed immediately while the
+ * spindle was really decelerating toward 1050 - and when the fresh CV finally
+ * landed at ~1100, that was a 150 rpm droop at cutting load: trip, on a
+ * spindle that was simply on its way back up. */
+#define MLOAD_AT_TARGET_SAMPLES      8
 
 static uint8_t  filtered_load = 0;
 static bool     filter_initialized = false;
@@ -39,7 +62,8 @@ static uint32_t stable_since = 0;           // HAL_GetTick when CV first entered
 static uint32_t stability_required_ms = 0;
 static uint16_t last_cv = 0;              // CV that came with the last sample
 static uint16_t last_sv = 0;              // SV that came with the last sample
-static bool     cv_at_target = false;     // CV reached the current SV at least once
+static bool     cv_at_target = false;     // CV held the regulation band this setpoint
+static uint8_t  at_target_count = 0;      // consecutive in-band samples so far
 
 /* Jam flight recorder — see motor_load.h. Written once per poll from the motor
  * task, read from the console task via motor_load_trace_get(). Both run under
@@ -164,6 +188,7 @@ void motor_load_init(void) {
     stable_since = 0;
     stability_required_ms = 0;
     cv_at_target = false;
+    at_target_count = 0;
 }
 
 void motor_load_motor_started(uint16_t target_rpm) {
@@ -199,6 +224,7 @@ void motor_load_motor_started(uint16_t target_rpm) {
     baseline_armed = false;
     stable_since = 0;
     cv_at_target = false;
+    at_target_count = 0;
 }
 
 void motor_load_motor_speed_change(uint16_t old_target, uint16_t new_target) {
@@ -226,12 +252,14 @@ void motor_load_motor_speed_change(uint16_t old_target, uint16_t new_target) {
      * no longer evidence of regulation), and a step UP leaves CV below it,
      * which is precisely the false grab this gate exists to stop. */
     cv_at_target = false;
+    at_target_count = 0;
 }
 
 void motor_load_motor_stopped(void) {
     last_cv = 0;
     last_sv = 0;
     cv_at_target = false;
+    at_target_count = 0;
     spike_grace_end = 0;
     stable_since = 0;
     stability_required_ms = 0;
@@ -258,6 +286,7 @@ void motor_load_update(uint8_t raw_load, uint16_t cv, uint16_t sv, bool is_runni
         load_baseline = 0;
         stable_since = 0;
         cv_at_target = false;
+        at_target_count = 0;
         return;
     }
 
@@ -288,17 +317,36 @@ void motor_load_update(uint8_t raw_load, uint16_t cv, uint16_t sv, bool is_runni
         uint16_t hi = (uint16_t)(sv + tol);
         bool in_window = (cv >= lo) && (cv <= hi);
 
-        /* Latching: reaching the setpoint is a fact about this operating
-         * point, and it stays true until the setpoint moves. The jam droop
-         * path needs "did it ever get there", not "is it there now" - the
-         * second question is the one it is trying to answer.
+        /* The at-target gate. Latching: having reached the setpoint is a fact
+         * about this operating point and stays true until the setpoint moves.
+         * The droop detector needs "did it ever get there", because "is it
+         * there now" is the question it is itself trying to answer.
          *
-         * This window (±5%, floor 25 rpm) is deliberately TIGHTER than the
-         * droop trip window (±10%, floor 60 rpm), so any CV that arms this
-         * gate is by construction well inside the no-trip band. A stale CV
-         * left over from a nearby old setpoint therefore cannot arm the gate
-         * into an immediate trip. */
-        if (in_window) cv_at_target = true;
+         * Three conditions, and each one is load-bearing:
+         *
+         *  - the SAME band jam.c trips on (jam.h's shared inline), not the
+         *    tighter baseline window. Arming on a tighter band than the one
+         *    that trips left a dead zone where an ordinary heavy cut settling
+         *    5-10% under setpoint never armed at all, disarming the droop
+         *    detector for the entire run;
+         *  - CV >= JAM_CV_VALID_RPM, because at low SV the band reaches down
+         *    to zero: at SV=50 the 60 rpm floor puts CV=0 "in band", and a
+         *    spindle that is not turning has not reached anything;
+         *  - MLOAD_AT_TARGET_SAMPLES consecutive samples, so a stale CV cannot
+         *    arm the gate by itself. Out of band resets the count - but only
+         *    while still learning: once latched, only a setpoint change or a
+         *    stop clears it, which is what makes a later droop detectable. */
+        if (!cv_at_target) {
+            const bool in_band = (cv >= JAM_CV_VALID_RPM) &&
+                                 !jam_spindle_out_of_regulation(cv, sv);
+            if (in_band) {
+                if (++at_target_count >= MLOAD_AT_TARGET_SAMPLES) {
+                    cv_at_target = true;
+                }
+            } else {
+                at_target_count = 0;
+            }
+        }
 
         if (!baseline_armed) {
             if (in_window) {

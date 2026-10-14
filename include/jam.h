@@ -53,6 +53,45 @@ typedef struct {
 #define JAM_VIBRATION_TIMEOUT_MS    200     // Sustained vibration time
 
 /*===========================================================================*/
+/* Spindle regulation band — ONE definition, used by two modules             */
+/*===========================================================================*/
+
+/* "Is the spindle failing to hold the speed it was commanded?"
+ *
+ * This lives in the header, and is an inline rather than a pair of constants,
+ * because TWO modules have to agree on it exactly:
+ *
+ *   - jam.c's droop detector trips when the spindle is OUTSIDE this band;
+ *   - motor_load.c's at-target gate arms when it has been INSIDE it.
+ *
+ * Those are the same question asked in opposite directions, and the gate is
+ * only sound if the two bands are identical. They were not when the gate was
+ * first written on 2026-10-14: arming used motor_load's ±5% baseline window
+ * while tripping used ±10%, which left a dead zone - a spindle settling 5-10%
+ * under setpoint, which is an ordinary heavy cut, never armed the gate at all
+ * and so disarmed the droop detector for the whole run. Two constants in two
+ * files drift; one function cannot.
+ *
+ * One-sided on purpose: CV above SV is an overshoot on a ramp-down, not a jam.
+ * The RPM floor keeps it meaningful at low commanded speeds, where 10% is a
+ * handful of RPM. */
+#define JAM_DROOP_PCT               10      // CV this far below SV = out of regulation
+#define JAM_DROOP_MIN_RPM           60      // ...but never less than this many RPM
+
+static inline bool jam_spindle_out_of_regulation(uint16_t cv, uint16_t sv) {
+    if (sv == 0) return false;
+    uint16_t tol = (uint16_t)(((uint32_t)sv * JAM_DROOP_PCT) / 100);
+    if (tol < JAM_DROOP_MIN_RPM) tol = JAM_DROOP_MIN_RPM;
+    return (uint32_t)cv + tol < (uint32_t)sv;
+}
+
+/* CV below this counts as "the spindle is not turning" (low-load detector),
+ * and is also the smallest CV that may arm the at-target gate. Shared for the
+ * same reason as the band above: motor_load.c needs it too. */
+#define JAM_LOW_LOAD_CV_THRESHOLD   25
+#define JAM_CV_VALID_RPM            JAM_LOW_LOAD_CV_THRESHOLD
+
+/*===========================================================================*/
 /* Public Functions                                                          */
 /*===========================================================================*/
 

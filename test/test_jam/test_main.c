@@ -462,7 +462,11 @@ void test_unacknowledged_jam_persists_through_update(void) {
  * grace out of the way. */
 static void prime_baseline_at(uint8_t baseline_load) {
     motor_load_motor_started(1000);   // grace=2000ms, stability_required=2000ms
-    motor_load_update(baseline_load, 1000, 1000, true);  // first sample, in window
+    /* MLOAD_AT_TARGET_SAMPLES in-band polls, so the droop gate latches too -
+     * a real run spends far more than 8 polls on speed before anything cuts. */
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        motor_load_update(baseline_load, 1000, 1000, true);
+    }
     tick_advance(2001);
     motor_load_update(baseline_load, 1000, 1000, true);  // stability complete -> armed
     /* Reset the EMA so the next motor_load_update warm-starts at the test
@@ -661,6 +665,36 @@ void test_step_at_high_load_trips_without_droop(void) {
     TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
 }
 
+/* REVIEW FINDING 2026-10-14: the still_up cancel path had no test at all, and
+ * the one test named for it was really exercising JAM_GRAB_MIN_LOAD. A slam
+ * that collapses must cancel, not confirm. */
+void test_slam_that_collapses_cancels_instead_of_confirming(void) {
+    prime_baseline_at(10);
+    feed_step(50, 1000, 27);
+    TEST_ASSERT_FALSE(feed_step(82, 1000, 27));   /* slam: +32, lands >= 80 */
+    TEST_ASSERT_TRUE(step_pending);
+    /* Breakthrough: the load is gone on the next sample, speed never sagged. */
+    TEST_ASSERT_FALSE(feed_step(40, 1000, 27));
+    TEST_ASSERT_FALSE(step_pending);
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* ...and still_up must test the absolute floor, not just the step height.
+ * With a low Step Thresh, `step_from + step_threshold` alone let a sample most
+ * of the way back down to free-run confirm a slam. */
+void test_still_up_requires_the_absolute_floor_not_just_the_step(void) {
+    prime_baseline_at(10);
+    feed_step(50, 1000, 5);
+    TEST_ASSERT_FALSE(feed_step(82, 1000, 5));    /* slam at StepTh=5 */
+    TEST_ASSERT_TRUE(step_pending);
+    /* 60 >= step_from(50) + 5, but far below JAM_STEP_ABS_FLOOR. Not slammed
+     * any more, and the spindle is on speed, so this must not confirm. */
+    TEST_ASSERT_FALSE(feed_step(60, 1000, 5));
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
 /* The OEM detector required both samples to be non-zero. A single KR=0 from
  * the MCB mid-cut otherwise reads as a full-load step on the sample after it. */
 void test_droop_holds_off_until_cv_has_read_something(void) {
@@ -696,7 +730,9 @@ static bool feed_step_sv(uint8_t raw, uint16_t cv, uint16_t sv, uint8_t step_thr
  * stop, with the spindle accelerating normally the whole time. */
 void test_speed_step_up_mid_run_is_not_a_grab(void) {
     motor_load_motor_started(1250);
-    motor_load_update(25, 1250, 1250, true);
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        motor_load_update(25, 1250, 1250, true);
+    }
     tick_advance(2001);
     motor_load_update(25, 1250, 1250, true);
     TEST_ASSERT_TRUE(motor_load_at_target_seen());
@@ -727,19 +763,85 @@ void test_droop_arms_once_the_new_speed_is_reached(void) {
      * only ever EXTENDS the deadline, so the 1250 ms from the start is what
      * has to expire here before any detector is live. */
     tick_advance(1251);
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
 
-    /* Ramp: under speed, real cutting load, no trip. */
+    /* Ramp: well under speed, real cutting load, no trip and no arming. */
     for (int i = 0; i < 10; i++) {
         TEST_ASSERT_FALSE(feed_step_sv(30, 1250, 1450, 27));
     }
-    /* Arrives at the new setpoint. */
-    TEST_ASSERT_FALSE(feed_step_sv(30, 1445, 1450, 27));
+    TEST_ASSERT_FALSE(motor_load_at_target_seen());
+
+    /* Arrives at the new setpoint and holds it for the dwell. */
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        TEST_ASSERT_FALSE(feed_step_sv(30, 1445, 1450, 27));
+    }
     TEST_ASSERT_TRUE(motor_load_at_target_seen());
 
     /* NOW it loses the speed under load: that is a grab. */
     TEST_ASSERT_FALSE(feed_step_sv(45, 1200, 1450, 27));   /* sample 1 */
     bool jammed = feed_step_sv(46, 1180, 1450, 27);        /* sample 2 */
     TEST_ASSERT_TRUE(jammed);
+    TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
+}
+
+/* FINDING FROM THE 2026-10-14 REVIEW, and the other half of the stale-CV
+ * problem. Clearing the gate on a speed change is not enough on its own: the
+ * next poll still carries the PRE-change CV, because the MCB refreshes CV only
+ * every ~6 polls. Sweep the dial down and straight back up and that stale
+ * reading is in band for the speed you just returned to, so a single-sample
+ * latch armed the gate while the spindle was really still decelerating. */
+void test_stale_cv_cannot_arm_the_gate_on_a_dial_return(void) {
+    motor_load_motor_started(1250);
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        motor_load_update(30, 1240, 1250, true);
+    }
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+    tick_advance(2001);
+
+    /* Dial down to 1050 and immediately back to 1250. */
+    motor_load_motor_speed_change(1250, 1050);
+    motor_load_motor_speed_change(1050, 1250);
+    TEST_ASSERT_FALSE(motor_load_at_target_seen());
+    tick_advance(1251);
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
+
+    /* One stale poll: CV is still the pre-change 1240, in band for 1250. */
+    TEST_ASSERT_FALSE(feed_step_sv(30, 1240, 1250, 27));
+    TEST_ASSERT_FALSE(motor_load_at_target_seen());   /* dwell not satisfied */
+
+    /* The fresh reading arrives and the spindle really did slow down. Under
+     * the old single-sample latch this was two qualified droop samples and an
+     * emergency stop on a spindle on its way back up. */
+    for (int i = 0; i < 10; i++) {
+        TEST_ASSERT_FALSE(feed_step_sv(30, 1100, 1250, 27));
+    }
+    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
+    TEST_ASSERT_FALSE(emergency_stop_called);
+}
+
+/* FINDING FROM THE 2026-10-14 REVIEW. Arming used motor_load's +/-5% baseline
+ * window while tripping used jam's +/-10% band, so a spindle that settled
+ * between the two - an ordinary heavy cut - never armed the gate, and the
+ * droop detector was disarmed for the whole run. Both now use jam.h's band. */
+void test_a_spindle_inside_the_band_but_not_at_setpoint_still_arms(void) {
+    motor_load_motor_started(1000);
+    tick_advance(1001);
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
+
+    /* 930 rpm against 1000: 7% low. Outside the +/-5% baseline window, well
+     * inside the 10% regulation band. This is a loaded cut holding speed. */
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        TEST_ASSERT_FALSE(feed_step_sv(55, 930, 1000, 27));
+    }
+    TEST_ASSERT_TRUE(motor_load_at_target_seen());
+    /* The baseline, which uses the tighter window, is legitimately still not
+     * armed - the two gates answer different questions. */
+    uint8_t b;
+    TEST_ASSERT_FALSE(motor_load_get_baseline(&b));
+
+    /* So a real grab from here is caught, where before it was invisible. */
+    TEST_ASSERT_FALSE(feed_step_sv(72, 450, 1000, 27));
+    TEST_ASSERT_TRUE(feed_step_sv(72, 450, 1000, 27));
     TEST_ASSERT_EQUAL(JAM_LOAD_STEP, jam_get_status()->type);
 }
 
@@ -752,6 +854,7 @@ void test_droop_arms_once_the_new_speed_is_reached(void) {
 void test_spin_up_under_cutting_load_is_not_a_grab(void) {
     motor_load_motor_started(1250);
     tick_advance(1251);                      /* inrush grace is over */
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
 
     const uint16_t ramp[] = {0, 22, 601, 900, 1113, 1150, 1193, 1222, 1238, 1247};
     for (unsigned i = 0; i < sizeof(ramp)/sizeof(ramp[0]); i++) {
@@ -767,30 +870,12 @@ void test_spin_up_under_cutting_load_is_not_a_grab(void) {
  * inherit it. */
 void test_speed_step_down_clears_the_at_target_gate(void) {
     motor_load_motor_started(1000);
-    motor_load_update(25, 1000, 1000, true);
+    for (int i = 0; i < MLOAD_AT_TARGET_SAMPLES; i++) {
+        motor_load_update(25, 1000, 1000, true);
+    }
     TEST_ASSERT_TRUE(motor_load_at_target_seen());
     motor_load_motor_speed_change(1000, 600);
     TEST_ASSERT_FALSE(motor_load_at_target_seen());
-}
-
-/* The arming window (+/-5%, floor 25 rpm) is tighter than the droop trip
- * window (+/-10%, floor 60 rpm) on purpose: a CV good enough to arm the gate
- * is by construction inside the no-trip band, so a stale reading from a nearby
- * old setpoint cannot arm straight into a trip. */
-void test_arming_window_is_tighter_than_the_trip_window(void) {
-    motor_load_motor_started(1000);
-    motor_load_update(30, 1000, 1000, true);
-    motor_load_motor_speed_change(1000, 1040);   /* 4% - within arming tol */
-    tick_advance(1001);                          /* clear the start grace */
-
-    /* The stale CV=1000 arms the gate against SV=1040... */
-    bool jammed = feed_step_sv(30, 1000, 1040, 27);
-    TEST_ASSERT_TRUE(motor_load_at_target_seen());
-    TEST_ASSERT_FALSE(jammed);
-    /* ...and is still nowhere near out of regulation, twice over. */
-    jammed = feed_step_sv(30, 1000, 1040, 27);
-    TEST_ASSERT_FALSE(jammed);
-    TEST_ASSERT_EQUAL(JAM_NONE, jam_get_status()->type);
 }
 
 /* A trace recovered from .noinit comes back frozen. It must not then suppress
@@ -905,6 +990,7 @@ void test_step_threshold_zero_disables_detector(void) {
 void test_spike_trips_with_unarmed_baseline(void) {
     motor_load_motor_started(1000);          /* grace = 1000 ms */
     tick_advance(1001);                      /* let the inrush grace expire */
+    TEST_ASSERT_FALSE(motor_load_in_spike_grace());
     /* CV nowhere near SV, so the baseline never arms. */
     motor_load_update(96, 400, 1000, true);
     bool jammed = jam_load_update(true, true, true, 95, 0, false, 0);
@@ -994,6 +1080,8 @@ int main(void) {
     RUN_TEST(test_step_with_droop_trips_after_confirmation);
     RUN_TEST(test_grab_trips_when_droop_follows_the_step);
     RUN_TEST(test_step_at_high_load_trips_without_droop);
+    RUN_TEST(test_slam_that_collapses_cancels_instead_of_confirming);
+    RUN_TEST(test_still_up_requires_the_absolute_floor_not_just_the_step);
     RUN_TEST(test_step_ignores_dropout_sample);
     RUN_TEST(test_step_cancels_when_load_collapses);
     RUN_TEST(test_step_threshold_zero_disables_detector);
@@ -1007,7 +1095,8 @@ int main(void) {
     RUN_TEST(test_droop_arms_once_the_new_speed_is_reached);
     RUN_TEST(test_spin_up_under_cutting_load_is_not_a_grab);
     RUN_TEST(test_speed_step_down_clears_the_at_target_gate);
-    RUN_TEST(test_arming_window_is_tighter_than_the_trip_window);
+    RUN_TEST(test_stale_cv_cannot_arm_the_gate_on_a_dial_return);
+    RUN_TEST(test_a_spindle_inside_the_band_but_not_at_setpoint_still_arms);
 
     /* Flight recorder */
     RUN_TEST(test_reset_recovered_trace_yields_to_a_new_run);
