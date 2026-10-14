@@ -66,10 +66,27 @@ static bool     cv_at_target = false;     // CV held the regulation band this se
 static uint8_t  at_target_count = 0;      // consecutive in-band samples so far
 
 /* Jam flight recorder — see motor_load.h. Written once per poll from the motor
- * task, read from the console task via motor_load_trace_get(). Both run under
- * the scheduler and the buffer is only ever appended to, so a torn read shows
- * one stale sample rather than corrupt state; that is cheaper than taking a
- * lock on the 20 Hz hot path for a diagnostic.
+ * task, read from the console task via motor_load_trace_snapshot() plus
+ * motor_load_trace_get_at(). No lock on the 20 Hz hot path for a diagnostic.
+ *
+ * The original claim here was that the buffer is append-only, so the worst a
+ * racing read could show was one stale sample. That was wrong in three ways,
+ * all of them only reachable while the spindle is actually turning (a frozen
+ * trace is not written at all):
+ *
+ *   - the base index was recomputed per row, and a 160-row print at 115200
+ *     baud takes ~0.6 s against a ~85 ms poll, so the base shifted 6-7 times
+ *     mid-print: rows repeated and every timestamp after a shift was wrong;
+ *   - the 8-byte entry copy is two word loads, and row 0 of a full buffer is
+ *     the slot the writer is about to overwrite - a preemption between the
+ *     loads spliced kr/filtered/flags/baseline from one sample onto cv/sv from
+ *     another, printed as a real row;
+ *   - motor_load_motor_started() resetting head and count under the reader
+ *     spliced the new run's samples into the old trace's print.
+ *
+ * Snapshotting the pair once per print fixes all three: the base no longer
+ * moves, and a torn entry is now genuinely the only residual race (one row,
+ * and only for a live read).
  *
  * The buffer lives in .noinit (NOLOAD — see ldscript.ld) so that startup does
  * NOT clear it. This is not a micro-optimisation: on 2026-10-13 a jam trip on
@@ -80,7 +97,19 @@ static uint8_t  at_target_count = 0;      // consecutive in-band samples so far
  * boot leaves indeterminate bytes here instead, which is what the magic word
  * and the range checks in trace_boot_recover() are for. */
 #define MLOAD_NOINIT __attribute__((section(".noinit")))
-#define MLOAD_TRACE_MAGIC 0x4A54524Eu   /* 'JTRN' */
+/* 'JTRN', with the buffer's SHAPE folded in so that a layout change is a
+ * magic mismatch by construction rather than a trace of garbage.
+ *
+ * Observed 2026-10-14: adding four variables to .noinit moved every symbol in
+ * the section (GCC orders them as it pleases, and .bss grew), so the magic was
+ * read from a word that had held something else and the recovery correctly
+ * started clean. The benign case. The dangerous case is a change that leaves
+ * the magic where it is but moves trace_buf or changes the entry size: magic
+ * matches, head and count pass their range checks, and the rows printed are
+ * whatever bytes now live under the buffer. Entry size and length are the two
+ * things that make the bytes mean what we think they mean, so they belong in
+ * the check. */
+#define MLOAD_TRACE_MAGIC     (0x4A54524Eu ^ (uint32_t)(sizeof(motor_load_trace_entry_t) << 16)                  ^ (uint32_t)MLOAD_TRACE_LEN)
 
 MLOAD_NOINIT static uint32_t trace_magic;
 MLOAD_NOINIT static motor_load_trace_entry_t trace_buf[MLOAD_TRACE_LEN];
@@ -90,12 +119,8 @@ MLOAD_NOINIT static bool     trace_frozen;
 MLOAD_NOINIT static uint32_t trace_frozen_tick;
 MLOAD_NOINIT static uint8_t  trace_origin;      /* motor_load_trace_origin_t */
 
-/* Measured sample spacing. The t_ms column is printed from the NOMINAL poll
- * rate, and the real one is longer - see motor_load_trace_period(). */
+/* Tick of the previous push, so each entry can carry its own real gap. */
 MLOAD_NOINIT static uint32_t trace_prev_tick;
-MLOAD_NOINIT static uint8_t  trace_dt_min;
-MLOAD_NOINIT static uint8_t  trace_dt_max;
-MLOAD_NOINIT static uint8_t  trace_dt_last;
 
 /* Set at boot, so .bss is right: it describes THIS boot's recovery, and must
  * not itself survive into the next one. */
@@ -113,28 +138,27 @@ static void trace_push(uint8_t kr, uint16_t cv, uint16_t sv) {
      * trace_boot_recover() is what normally guarantees the range; this is here
      * so that a missed init path can never corrupt RAM again. */
     if (trace_head >= MLOAD_TRACE_LEN) trace_head = 0;
+    /* Real gap since the previous sample, measured before anything else so a
+     * saturation flag can go into this entry's own flags. */
+    const uint32_t now = HAL_GetTick();
+    uint32_t dt = (trace_count > 0) ? (now - trace_prev_tick) : 0;
+    bool dt_saturated = false;
+    if (dt > 255) { dt = 255; dt_saturated = true; }
+    trace_prev_tick = now;
+
     motor_load_trace_entry_t *e = &trace_buf[trace_head];
     e->kr       = kr;
     e->filtered = filtered_load;
     e->flags    = (uint8_t)((baseline_armed ? MLOAD_TRACE_F_ARMED : 0) |
                             (motor_load_in_spike_grace() ? MLOAD_TRACE_F_GRACE : 0) |
-                            (cv_at_target ? MLOAD_TRACE_F_ATTGT : 0));
+                            (cv_at_target ? MLOAD_TRACE_F_ATTGT : 0) |
+                            (dt_saturated ? MLOAD_TRACE_F_DTSAT : 0));
     e->baseline = load_baseline;
     e->cv       = cv;
     e->sv       = sv;
+    e->dt_ms    = (uint8_t)dt;
     trace_head = (uint16_t)((trace_head + 1) % MLOAD_TRACE_LEN);
     if (trace_count < MLOAD_TRACE_LEN) trace_count++;
-
-    /* Measure our own cadence. One sample has no gap to measure yet. */
-    const uint32_t now = HAL_GetTick();
-    if (trace_count > 1) {
-        uint32_t dt = now - trace_prev_tick;
-        if (dt > 255) dt = 255;
-        trace_dt_last = (uint8_t)dt;
-        if (trace_dt_min == 0 || dt < trace_dt_min) trace_dt_min = (uint8_t)dt;
-        if (dt > trace_dt_max) trace_dt_max = (uint8_t)dt;
-    }
-    trace_prev_tick = now;
 }
 
 static uint32_t grace_for_delta(uint16_t delta_rpm) {
@@ -411,10 +435,24 @@ bool motor_load_at_target_seen(void) {
     return cv_at_target;
 }
 
-void motor_load_trace_period(uint8_t *min_ms, uint8_t *max_ms, uint8_t *last_ms) {
-    if (min_ms)  *min_ms  = trace_dt_min;
-    if (max_ms)  *max_ms  = trace_dt_max;
-    if (last_ms) *last_ms = trace_dt_last;
+void motor_load_trace_snapshot(uint16_t *count, uint16_t *base) {
+    /* Read count first: it only ever grows to MLOAD_TRACE_LEN and stops, so a
+     * count taken before the head cannot promise more samples than the head
+     * accounts for. */
+    uint16_t n = trace_count;
+    if (n > MLOAD_TRACE_LEN) n = MLOAD_TRACE_LEN;
+    uint16_t h = trace_head;
+    if (h >= MLOAD_TRACE_LEN) h = 0;
+    if (count) *count = n;
+    /* Oldest-first: once the buffer has wrapped, the head is the oldest. */
+    if (base) *base = (n == MLOAD_TRACE_LEN) ? h : 0;
+}
+
+bool motor_load_trace_get_at(uint16_t base, uint16_t i,
+                             motor_load_trace_entry_t *out) {
+    if (!out || i >= trace_count) return false;
+    *out = trace_buf[(base + i) % MLOAD_TRACE_LEN];
+    return true;
 }
 
 void motor_load_get_debug(motor_load_debug_t *out) {
@@ -450,9 +488,6 @@ void motor_load_trace_reset(void) {
     trace_rebooted = false;
     trace_seen = false;
     trace_prev_tick = 0;
-    trace_dt_min = 0;
-    trace_dt_max = 0;
-    trace_dt_last = 0;
 }
 
 void motor_load_trace_mark_read(void) {
@@ -484,9 +519,12 @@ uint16_t motor_load_trace_count(void) {
 }
 
 bool motor_load_trace_get(uint16_t i, motor_load_trace_entry_t *out) {
-    if (!out || i >= trace_count) return false;
-    /* Oldest-first: once the buffer has wrapped, trace_head is the oldest. */
-    uint16_t base = (trace_count == MLOAD_TRACE_LEN) ? trace_head : 0;
-    *out = trace_buf[(base + i) % MLOAD_TRACE_LEN];
-    return true;
+    /* Convenience wrapper: takes a fresh snapshot per call, which is fine for
+     * a single sample or for a frozen trace. Anything printing a whole trace
+     * while the spindle may be turning must snapshot once - see
+     * motor_load_trace_snapshot(). */
+    uint16_t n = 0, base = 0;
+    motor_load_trace_snapshot(&n, &base);
+    if (i >= n) return false;
+    return motor_load_trace_get_at(base, i, out);
 }

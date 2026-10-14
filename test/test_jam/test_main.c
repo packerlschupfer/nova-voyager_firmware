@@ -878,6 +878,58 @@ void test_speed_step_down_clears_the_at_target_gate(void) {
     TEST_ASSERT_FALSE(motor_load_at_target_seen());
 }
 
+/* REVIEW FINDING 2026-10-14: the t_ms column was the sample INDEX times the
+ * nominal 50 ms poll, and the samples are not evenly spaced - the real running
+ * poll is ~85 ms, a lost reply adds a 250 ms timeout, and on a stall the loop
+ * drops to the 500 ms idle interval while still recording. Each entry now
+ * carries its own measured gap. */
+void test_each_trace_sample_carries_its_own_measured_gap(void) {
+    motor_load_trace_reset();
+    motor_load_update(20, 1000, 1000, true);      /* first: no gap to measure */
+    tick_advance(85);
+    motor_load_update(21, 1000, 1000, true);
+    tick_advance(500);                            /* a stall-branch poll */
+    motor_load_update(22, 1000, 1000, true);
+
+    motor_load_trace_entry_t e;
+    TEST_ASSERT_TRUE(motor_load_trace_get(0, &e));
+    TEST_ASSERT_EQUAL(0, e.dt_ms);
+    TEST_ASSERT_FALSE(e.flags & MLOAD_TRACE_F_DTSAT);
+
+    TEST_ASSERT_TRUE(motor_load_trace_get(1, &e));
+    TEST_ASSERT_EQUAL(85, e.dt_ms);
+    TEST_ASSERT_FALSE(e.flags & MLOAD_TRACE_F_DTSAT);
+
+    /* 500 ms does not fit in a uint8: capped, and SAID to be capped, so the
+     * number cannot be read as a real 255 ms poll. */
+    TEST_ASSERT_TRUE(motor_load_trace_get(2, &e));
+    TEST_ASSERT_EQUAL(255, e.dt_ms);
+    TEST_ASSERT_TRUE(e.flags & MLOAD_TRACE_F_DTSAT);
+}
+
+/* The snapshot must stay self-consistent: whatever count it reports has to be
+ * readable against the base it reported, even as the recorder keeps pushing. */
+void test_trace_snapshot_is_readable_to_its_own_count(void) {
+    motor_load_trace_reset();
+    for (int i = 0; i < 12; i++) {
+        tick_advance(85);
+        motor_load_update((uint8_t)(30 + i), 1000, 1000, true);
+    }
+    uint16_t n = 0, base = 0;
+    motor_load_trace_snapshot(&n, &base);
+    TEST_ASSERT_EQUAL(12, n);
+
+    motor_load_trace_entry_t e;
+    for (uint16_t i = 0; i < n; i++) {
+        TEST_ASSERT_TRUE(motor_load_trace_get_at(base, i, &e));
+    }
+    /* Oldest first. */
+    TEST_ASSERT_TRUE(motor_load_trace_get_at(base, 0, &e));
+    TEST_ASSERT_EQUAL(30, e.kr);
+    TEST_ASSERT_TRUE(motor_load_trace_get_at(base, n - 1, &e));
+    TEST_ASSERT_EQUAL(41, e.kr);
+}
+
 /* A trace recovered from .noinit comes back frozen. It must not then suppress
  * recording of the run the operator just started - that cost a deliberate
  * capture on 2026-10-13. A trip-frozen trace still survives a restart. */
@@ -1099,6 +1151,8 @@ int main(void) {
     RUN_TEST(test_a_spindle_inside_the_band_but_not_at_setpoint_still_arms);
 
     /* Flight recorder */
+    RUN_TEST(test_each_trace_sample_carries_its_own_measured_gap);
+    RUN_TEST(test_trace_snapshot_is_readable_to_its_own_count);
     RUN_TEST(test_reset_recovered_trace_yields_to_a_new_run);
     RUN_TEST(test_trip_frozen_trace_survives_a_restart);
     RUN_TEST(test_reading_the_trace_keeps_it_until_the_next_run);
