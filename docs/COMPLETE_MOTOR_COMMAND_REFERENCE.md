@@ -1,4 +1,12 @@
 # Complete Motor Command Reference - R2P06e Firmware
+
+> **CORRECTION 2026-10-31 — `TR` is not the torque ramp.**
+> `TR` is the MCB's **thermal threshold**; the torque ramp is `SR`. This
+> document was written during reverse engineering and states the wrong mapping
+> below. The firmware wrote `torque_ramp` to `TR` until the register remap on
+> 2026-09-06 — see `src/motor.c`'s `motor_send_param_checked()` and the
+> parameter table in `src/motor.c` for the mapping that actually ships. Treat
+> every `TR`/torque-ramp claim in this file as superseded.
 **Purpose**: Comprehensive mapping of ALL motor commands for nova_firmware replication  
 **Source**: R2P06e CG disassembly + hardware testing  
 **Date**: January 12, 2026

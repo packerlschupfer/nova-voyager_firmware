@@ -1,5 +1,10 @@
 # Nova Voyager Firmware - Complete Codebase Analysis
 
+> **HISTORICAL RECORD.** This is a codebase snapshot, kept because the reasoning in
+> it is still useful. It is **not** current documentation: figures, file
+> layouts, command counts and status claims were true when written and have
+> not been maintained. Where it disagrees with the code, the code is right.
+
 **Date:** 2026-02-02 (Updated: 2026-02-03)
 **Analyzer:** Comprehensive code review (339k context)
 **Scope:** Entire firmware (40+ files, 15k+ lines)

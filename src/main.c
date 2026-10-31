@@ -774,7 +774,7 @@ int main(void) {
     } else if (full_boot) {
         // Show version splash briefly during boot progress (no extra delay)
         /* FW_VERSION_FALLBACK, not FW_VERSION_STRING: the describe output can
-         * be "v0.2.0-5-gaf0ca1c", and display_boot_message() prints through
+         * be "v0.1.0-5-gaf0ca1c", and display_boot_message() prints through
          * lcd_print() without padding or truncating, so 17 characters would
          * run off the end of a 16-column row and into the next one. The
          * release number fits; the serial banner carries the precise value. */

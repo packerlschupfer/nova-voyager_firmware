@@ -1,6 +1,15 @@
 # Stack Usage Analysis
 
-Generated with -fstack-usage flag. All measurements in bytes.
+> **STALE, 2026-10-31.** Every allocation figure below is wrong. FreeRTOS
+> stack sizes are given in **words**, not bytes, so the real allocations are
+> four times what this table says — and they have changed since. The current
+> values live in `include/shared.h` (`STACK_SIZE_UI` 256 words = 1024 bytes,
+> `STACK_SIZE_MOTOR` 192, `STACK_SIZE_TAPPING` 160, `STACK_SIZE_DEPTH` 96,
+> plus `configMINIMAL_STACK_SIZE`). Use `STACK` on the console for live
+> high-water marks instead of this file.
+
+Generated with -fstack-usage flag. Allocations below are mislabelled as bytes;
+see the note above.
 
 ## Task Stack Allocations (from main.c)
 

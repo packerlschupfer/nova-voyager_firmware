@@ -69,10 +69,15 @@
 - **Settings export** — DUMP (all settings) + EEDUMP (EEPROM hex dump)
 - **Games** — optional Pong, Snake, Penguin in a separate FreeRTOS task
   (`pio run -e nova_voyager_games`); zero game code in default build
-- **Serial console** — 61 production + 38 debug commands (9600 baud)
-- **USB DFU updates** — with the companion
+- **Serial console** — 121 commands, 72 of them in release builds (9600 baud)
+- **USB DFU updates** — with the **72 MHz** companion
   [bootloader](https://github.com/Packerlschupfer/nova-voyager_bootloader),
-  no ST-Link needed for subsequent flashes
+  no ST-Link needed for subsequent flashes. Note the pairing: the default
+  `nova_voyager` build runs at 120 MHz, and the 120 MHz bootloader cannot
+  derive the 48 MHz clock USB needs, so it refuses DFU — `DFU` on that pairing
+  just reboots, and the firmware says so when you try. Build and flash the
+  72 MHz pair (`./flash_firmware.sh custom --dfu`) if you want USB updates;
+  otherwise every flash needs SWD.
 - **Documented MCB protocol** — see [`docs/MOTOR_PROTOCOL.md`](docs/MOTOR_PROTOCOL.md)
   and [`docs/EEPROM_MAP.md`](docs/EEPROM_MAP.md)
 
@@ -276,7 +281,9 @@ ETX, the way `task_motor.c::wait_response()` always had.
 
 ## Serial console
 
-9600 baud on PA9/PA10. 61 production commands — start with `HELP`.
+9600 baud on PA9/PA10. 72 commands in a release build (121 counting the
+debug-only ones) — start with `HELP`, which generates its list from the command
+table, so it cannot go stale the way this paragraph can.
 
 | Command | What it does |
 |---------|--------------|
@@ -300,20 +307,34 @@ worth blinding them mid-cut. Stop the spindle and repeat.
 
 `SAVE` reports what actually happened — a save whose flash mirror had to be
 deferred says so rather than claiming success.
+
+| Command | Does |
+|---------|------|
 | `ALIGN [A/B/C/OFF]` | Sensor alignment test |
 | `GAME P/S/N` | Pong / Snake / Penguin (games build only) |
-| `DFU` | Reboot into USB DFU bootloader |
+| `DFU` | Reboot into USB DFU bootloader (see the note on bootloader pairing) |
 | `SAVE` | Persist settings to EEPROM |
 
 ---
 
 ## Build gates
 
-CI and the release workflow run three checks that encode invariants the
-compiler and the test suite cannot:
+CI and the release workflow run five checks that encode invariants the
+compiler and the test suite cannot. Before pushing, the whole routine is:
+
+```bash
+./scripts/check-builds.sh          # all four CI environments
+pio test -e native                 # 506 tests
+./scripts/check-safety-gate.sh
+./scripts/check-settings-mirror.sh
+./scripts/check-pins.sh
+./scripts/check-version.sh
+```
 
 | Script | Enforces |
 |--------|----------|
+| `scripts/check-builds.sh` | Every environment CI builds, builds locally — and prints each one's RAM figure. Only `release` was ever built by hand, so a 1280-byte jam flight recorder overflowed the RAM-tight games and demo builds past the DFU hand-off word and left CI red for eight commits before anyone noticed. |
+| `scripts/check-version.sh` | `FW_VERSION_MAJOR/MINOR/PATCH` and `FW_VERSION_FALLBACK` agree with each other, and with the tag being released. The version was hand-maintained once and said `v0.1.0-RTOS` for 35 commits. |
 | `scripts/check-pins.sh` | The toolchain/framework pins in `platformio.ini` are actually applied per-env — a pin declared only in `[common]` is silently ignored, which is how the first release binary differed from the tested one. |
 | `scripts/check-safety-gate.sh` | Every function that drives the motor-enable line consults `safety_can_start_motor()`, or is on a two-entry allowlist with a reason. No test can see a gate that was never called. |
 | `scripts/check-settings-mirror.sh` | `test/test_settings`'s local copy of the settings types matches the real headers. `pio test -e native` compiles no `src/`, so that mirror IS the coverage — when it drifts the suite passes while testing a layout the firmware does not ship. |
@@ -324,7 +345,7 @@ the offending symbol.
 ## Project status
 
 - All features implemented; firmware in daily use
-- **445 unit tests** across 18 suites (all passing)
+- **506 unit tests** across 19 suites (all passing)
 
   Five of those suites exercise the *shipping* code rather than a copy, by
   keeping the logic in a header the tests can include directly — `safety.h`,
@@ -340,7 +361,27 @@ the offending symbol.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+Copyright (C) 2026 Packerlschupfer (https://github.com/Packerlschupfer)
+
+GPL-3.0 — see [LICENSE](LICENSE). `LICENSE` is the bare licence text, which
+names no holder; this is the notice the GPL's own "How to Apply" section asks
+for, so that anyone redistributing a build knows whose copyright they hold it
+under.
+
+### Third-party code in a built binary
+
+The firmware links components under their own licences. A binary redistributed
+from this project carries all of them:
+
+| Component | Licence | Where |
+|-----------|---------|-------|
+| FreeRTOS kernel | MIT | PlatformIO framework package |
+| STM32Cube F1 HAL / CMSIS | BSD-3-Clause | PlatformIO framework package |
+| Unity test framework | MIT | `pio test -e native` only — not in a firmware binary |
+| `scripts/font8x16.py` | MIT (hubenchang0515) | build-time glyph generation |
+
+No manufacturer code and no manufacturer binaries are present — see
+*Trademarks and independence* below.
 
 ## Safety
 

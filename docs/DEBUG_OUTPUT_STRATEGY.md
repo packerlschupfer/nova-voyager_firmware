@@ -1,5 +1,10 @@
 # Debug Output Optimization Strategy
 
+> **HISTORICAL RECORD.** This is a plan for debug output, kept because the reasoning in
+> it is still useful. It is **not** current documentation: figures, file
+> layouts, command counts and status claims were true when written and have
+> not been maintained. Where it disagrees with the code, the code is right.
+
 ## Overview
 
 The codebase contains 1,196 debug statements consuming 27.2 KB of flash. By using conditional compilation macros, we can eliminate this overhead in production builds.

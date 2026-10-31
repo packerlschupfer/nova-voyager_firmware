@@ -1,4 +1,9 @@
 # Motor Profile Feature - User Guide
+
+> **HISTORICAL RECORD.** This is a user guide for the motor profiles, kept because the reasoning in
+> it is still useful. It is **not** current documentation: figures, file
+> layouts, command counts and status claims were true when written and have
+> not been maintained. Where it disagrees with the code, the code is right.
 **Feature**: Motor Profile Selection (SOFT/NORMAL/HARD)
 **Date Implemented**: 2026-01-14
 **Firmware Version**: v0.1.0-RTOS+

@@ -1,4 +1,14 @@
 # Load/Spike Sensor Analysis - No Init Required!
+
+> **SUPERSEDED IN PART, 2026-10-31.** What this document says about the load
+> *sensor* still holds: KR needs no initialisation, the MCB measures current
+> continuously. What it says about *jam detection* does not. "JAM DETECTION
+> (Already Working!)" described the OEM firmware's arrangement, where the only
+> load-based detector is the MCB's own. This firmware now runs four detectors
+> of its own on the HMI side — absolute spike, sustained, grab (slam + droop)
+> and low-load — plus a flight recorder for reading back why one tripped. See
+> `src/jam.c`, `include/jam.h` and `include/motor_load.h`; none of that
+> architecture is described here.
 **Discovery**: Load sensing is MCB-internal, always active  
 **Date**: January 12, 2026
 
@@ -140,7 +150,7 @@ if (current_load > baseline + threshold) {
 
 ---
 
-## JAM DETECTION (Already Working!)
+## JAM DETECTION (as the OEM firmware did it — see the banner at the top)
 
 ### Nova Firmware Status
 

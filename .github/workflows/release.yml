@@ -96,8 +96,36 @@ jobs:
           (cd release && sha256sum * > sha256sums.txt)
           ls -la release/
 
+      # Not all three builds are equal, and a download page gives no hint of
+      # that. Spelled out in the body rather than left to the filename.
+      - name: Compose asset notes
+        run: |
+          cat > release_notes.md <<'NOTE'
+          ### Which asset do I want?
+
+          **`nova_voyager`** — the one to use. This is the build that gets
+          flashed to the author's machine and the one to run if you intend to
+          report anything.
+
+          **`nova_voyager_games`** and **`nova_voyager_demo`** are not for
+          diagnosis, and should not be used for it:
+
+          - both carry a **40-sample** jam flight recorder instead of 160, to
+            fit the RAM the game task and its FreeRTOS heap take up. A jam
+            trace from either is a quarter of the history;
+          - `nova_voyager_demo` writes **nothing** to EEPROM or flash, so no
+            setting you change survives a power cycle — that is the point of
+            it, but it means it cannot reproduce anything settings-dependent;
+          - `nova_voyager_demo` also dumps the EEPROM over serial at boot.
+
+          See CHANGELOG.md for what changed, and CONTRIBUTING.md for what to
+          include in a report.
+          NOTE
+          cat release_notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
+          body_path: release_notes.md
           generate_release_notes: true

@@ -1,5 +1,10 @@
 # Combinable Triggers System - Code Review
 
+> **HISTORICAL RECORD.** This is a review checklist from early development, kept because the reasoning in
+> it is still useful. It is **not** current documentation: figures, file
+> layouts, command counts and status claims were true when written and have
+> not been maintained. Where it disagrees with the code, the code is right.
+
 **Date:** 2026-02-02
 **Reviewer:** Automated + Manual Analysis
 **Scope:** Tapping trigger system architecture and implementation

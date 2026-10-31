@@ -15,7 +15,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/check-version.sh            # compare against `git describe`
-#   ./scripts/check-version.sh v0.2.0     # compare against an explicit tag
+#   ./scripts/check-version.sh v0.1.0     # compare against an explicit tag
 #
 cd "$(dirname "$0")/.." || { echo "cannot reach the repo root" >&2; exit 1; }
 

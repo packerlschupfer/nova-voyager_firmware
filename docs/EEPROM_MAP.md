@@ -225,7 +225,7 @@ factory defaults. Neither this document, nor the header comment, nor
 disagreeing authorities and no check. There is one authority now, and adding a
 field to either record is a build error rather than a corruption.
 
-**What the settings block does and does not hold.** 61 bytes against a 176-byte
+**What the settings block does and does not hold.** 61 bytes against a 192-byte
 `settings_t`, so it is a subset: motor tuning, all four jam / belt-break
 detectors, depth mode/target/offset/action, tapping triggers and timings, step
 drill, power output and the temperature trip — everything that changes how the

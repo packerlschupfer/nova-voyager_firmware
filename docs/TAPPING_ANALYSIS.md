@@ -1,4 +1,9 @@
 # Tapping Mode Analysis Reference
+
+> **HISTORICAL RECORD.** This is the reverse-engineering notes behind tapping, kept because the reasoning in
+> it is still useful. It is **not** current documentation: figures, file
+> layouts, command counts and status claims were true when written and have
+> not been maintained. Where it disagrees with the code, the code is right.
 ## Tapping/Peck Drilling Analysis
 
 ### Original Teknatool Tapping Modes (from FAQ)

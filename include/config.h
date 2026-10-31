@@ -840,7 +840,7 @@
 /*===========================================================================*/
 
 #define FW_VERSION_MAJOR    0
-#define FW_VERSION_MINOR    2
+#define FW_VERSION_MINOR    1
 #define FW_VERSION_PATCH    0
 
 /* The release this tree is working towards. It is the FALLBACK identity, used
@@ -849,13 +849,13 @@
  * tag; scripts/check-version.sh fails the release if a vX.Y.Z tag and these
  * three numbers disagree, which is the whole reason the numbers are still
  * here. */
-#define FW_VERSION_FALLBACK "v0.2.0"
+#define FW_VERSION_FALLBACK "v0.1.0"
 
 /* What the firmware actually reports.
  *
  * FW_GIT_DESCRIBE is injected by extra_script.py from
  * `git describe --tags --dirty --always`, so a build identifies the exact
- * commit it came from: "v0.2.0", "v0.2.0-5-gaf0ca1c", "v0.2.0-dirty".
+ * commit it came from: "v0.1.0", "v0.1.0-5-gaf0ca1c", "v0.1.0-dirty".
  *
  * Why this is not a hand-maintained constant any more: it was one, it said
  * "v0.1.0-RTOS", and it kept saying that through 35 commits and about 50

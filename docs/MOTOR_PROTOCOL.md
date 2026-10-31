@@ -38,7 +38,7 @@ The HMI (GD32F303) communicates with a **separate motor controller** via serial.
 | ST | 0x5354 | 0 | Motor start/enable - **confirmed via TX capture** |
 | SV | 0x5356 | RPM | Set Velocity - target speed |
 | **CV** | **0x4356** | **RPM** | **Current Velocity - actual motor speed (feedback)** |
-| GF | 0x4746 | 32/34/436/438 | Get Flags - see table below |
+| GF | 0x4746 | 32/34/16929+ | Get Flags - see table below |
 | **KR** | **0x4B52** | **0-100** | **Keep Running / Load% - 0=stopped, 100=startup, 10-11=unloaded, 13-15=accel** |
 | **S2** | **0x5332** | **900** | **Speed 2 - secondary speed param, always 900** |
 | **CL** | **0x434C** | **70/100** | **Current Limit - 70% idle, 100% running** |
@@ -54,8 +54,8 @@ The HMI (GD32F303) communicates with a **separate motor controller** via serial.
 |-------|---------|
 | 32 | STOPPED (forward mode) |
 | 34 | RUNNING (forward mode) |
-| 436 | STOPPED (reverse mode) |
-| 438 | RUNNING (reverse mode) |
+| ~~436~~ | ~~STOPPED (reverse mode)~~ — does not exist; see the correction below |
+| ~~438~~ | ~~RUNNING (reverse mode)~~ — does not exist; see the correction below |
 | 16929+ | ERROR state (bit 14 = 0x4000 set) |
 
 **GF Error Detection**: When bit 14 (0x4000) is set, MCB is in error state.
@@ -1400,7 +1400,7 @@ SE=S6             → Reset speed profile slot 6
 SE=S7             → Reset speed profile slot 7 (NORMAL)
 SE=S8             → Reset speed profile slot 8 (SOFT)
 SE=S9             → Reset speed profile slot 9
-SE=TR             → Reset torque ramp
+SE=TR             → Reset the thermal threshold (NOT the torque ramp; that is SR)
 SE=FD             → Reset profile select
 SE=SP             → Reset Kprop
 SE=SI             → Reset Kint
@@ -1637,7 +1637,7 @@ a static value (10) that doesn't change with motor state.
 | Reg | Stopped | Running @500 | Description |
 |-----|---------|-------------|-------------|
 | SR | 1000 | 1000 | Speed ramp rate (ms to target) |
-| TR | 75 | 75 | Torque ramp rate |
+| TR | 75 | 75 | **Thermal threshold** — NOT the torque ramp (that is SR). Corrected 2026-09-06; this firmware wrote torque_ramp here for years. |
 | SP | 1000 | 1000 | Kprop (proportional gain, 100.0%) |
 | SI | 500 | 500 | Kint (integral gain, 50.0%) |
 | KP | 0 | 0 | Alternate Kp (unused, 0) |
@@ -1757,7 +1757,7 @@ The target command code is sent as **raw bytes**, not ASCII decimal. Both format
 **Writable registers (confirmed or expected):**
 - S0-S9: Speed profiles
 - SP, SI: PID proportional/integral gains
-- SR, TR: Speed/torque ramp rates
+- SR: speed AND torque ramp rates. TR is the thermal threshold, not a ramp — corrected 2026-09-06.
 - CL: Current limit
 - FD: Profile select (Normal/Soft/Hard)
 - I0, I3, IU, OV: IR compensation parameters

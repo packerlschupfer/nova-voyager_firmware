@@ -179,7 +179,7 @@ typedef struct __attribute__((packed)) {
  * treated as absent and — unlike before — is NOT overwritten until the
  * operator saves, so a mismatch costs defaults for one boot rather than the
  * block. See eeprom_load_custom() in settings.c. */
-/* Back to 1 for v0.2.0: the public numbering starts here and only goes up.
+/* Back to 1: the public numbering starts here and only goes up.
  *
  * Resetting a counter downward re-uses a number already burned on an
  * incompatible layout, which the note above rightly calls out as dangerous -

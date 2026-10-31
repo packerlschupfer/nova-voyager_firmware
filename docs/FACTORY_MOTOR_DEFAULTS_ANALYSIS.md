@@ -1,4 +1,12 @@
 # Factory Motor Defaults - Complete Analysis
+
+> **CORRECTION 2026-10-31 — `TR` is not the torque ramp.**
+> `TR` is the MCB's **thermal threshold**; the torque ramp is `SR`. This
+> document was written during reverse engineering and states the wrong mapping
+> below. The firmware wrote `torque_ramp` to `TR` until the register remap on
+> 2026-09-06 — see `src/motor.c`'s `motor_send_param_checked()` and the
+> parameter table in `src/motor.c` for the mapping that actually ships. Treat
+> every `TR`/torque-ramp claim in this file as superseded.
 **Analysis Date**: January 12, 2026  
 **Source**: R2P06e CG & R2P05x CG firmware binaries + disassembly
 
