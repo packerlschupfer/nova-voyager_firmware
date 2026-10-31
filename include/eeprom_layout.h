@@ -168,12 +168,7 @@ typedef struct __attribute__((packed)) {
  * stored bytes and cannot tell you how to interpret them), feeding garbage
  * jam and belt-break thresholds into live settings. A new magic makes every
  * pre-release block unmatchable for good. See SETTINGS_MAGIC in config.h. */
-#define EE_CUSTOM_MAGIC_VALUE  0xC2
-
-/* The magic this block carried before v0.2.0. Kept ONLY so that a block left
- * by a v0.1.0 unit can be recognised and reported rather than silently
- * ignored - see eeprom_load_custom(). Never write it. */
-#define EE_CUSTOM_MAGIC_LEGACY 0xC1
+#define EE_CUSTOM_MAGIC_VALUE  0xC1
 /* Layout version of the 0xB0 EEPROM block.
  *
  * Reset to 1 on 2026-08-30 alongside SETTINGS_VERSION, for the same reason:
@@ -184,22 +179,21 @@ typedef struct __attribute__((packed)) {
  * treated as absent and — unlike before — is NOT overwritten until the
  * operator saves, so a mismatch costs defaults for one boot rather than the
  * block. See eeprom_load_custom() in settings.c. */
-/* Back to 1 for v0.2.0, with the magic changed from 0xC1 to 0xC2 in the same
- * breath - which is the only thing that makes resetting a counter downward
- * safe, for exactly the reason the comment above spells out.
+/* Back to 1 for v0.2.0: the public numbering starts here and only goes up.
  *
- * Why now: v0.1.0 is the first release strangers actually run, and the
- * 2026-09-06 register remap changed what three stored motor fields MEAN
- * without changing the struct that holds them - torque_ramp was 50-2000
- * (factory 75) and is now the MCB's SR, 1000-10000; pulse_max went 185 -> 50;
- * ir_offset 400 -> 82. A v0.1.0 block passes magic, version and checksum with
- * all three values valid-looking and wrong, because a checksum covers the
- * bytes and says nothing about how they are read. Only
- * motor_send_param_checked()'s range test stood between those values and the
- * motor controller.
+ * Resetting a counter downward re-uses a number already burned on an
+ * incompatible layout, which the note above rightly calls out as dangerous -
+ * so this is only safe because there is provably nothing out there holding a
+ * v2 block. Checked 2026-10-31: every v0.1.0 release asset has a download
+ * count of ZERO, and before that same day flash_firmware.sh hardcoded ssh to
+ * one particular Raspberry Pi, so the project's own tooling could not have
+ * installed this firmware on anyone else's bench even from source. The only
+ * v2 block in existence is the author's own, and it will be re-saved.
  *
- * The new magic retires every pre-v0.2.0 block for good, so the counter starts
- * at 1 with no number burned behind it and only ever goes up from here. */
+ * That window is now closed. From 1 upward, monotonically, and if a layout
+ * ever changes again the counter goes UP - or the magic changes, as it did on
+ * 2026-08-30 when the same question had a different answer because the old
+ * numbers really were out in the wild. */
 #define EE_CUSTOM_VERSION_NUM  1
 
 // Read/write helpers

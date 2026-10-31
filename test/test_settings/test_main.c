@@ -53,7 +53,7 @@
 /* Must track include/eeprom_layout.h — enforced by
  * scripts/check-settings-mirror.sh, which missed this on the very commit that
  * added it because the script only read include/settings.h. */
-#define EE_CUSTOM_MAGIC_VALUE   0xC2
+#define EE_CUSTOM_MAGIC_VALUE   0xC1
 #define EE_CUSTOM_VERSION_NUM   1
 
 /*===========================================================================*/
