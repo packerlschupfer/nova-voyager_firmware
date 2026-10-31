@@ -1171,7 +1171,16 @@ _Static_assert(SERIAL_CMD_BUFFER_SIZE >= 32, "Command buffer too small");
  * Changing the magic makes every pre-release image unmatchable for good,
  * which is what "start fresh" actually requires. The version counter is then
  * free to begin at 1 and only ever go up from here. */
-#define SETTINGS_MAGIC          0x4E4F5631  // "NOV1" — see note above
+#define SETTINGS_MAGIC          0x4E4F5632  // "NOV2" — see note above
+
+/* The mirror magic before v0.2.0. Recognised so a v0.1.0 mirror can be
+ * reported rather than silently dropped; never written.
+ *
+ * The mirror has to be retired alongside the EEPROM block, not instead of it:
+ * it holds the WHOLE settings_t (settings.h), motor_params_t included, so
+ * invalidating only the 0xB0 EEPROM block would have let the stale
+ * torque_ramp/pulse_max/ir_offset values walk straight back in through flash. */
+#define SETTINGS_MAGIC_LEGACY   0x4E4F5631  // "NOV1"
 
 // EEPROM storage layout
 #define EEPROM_SETTINGS_ADDR    0x0000      // Settings start at beginning

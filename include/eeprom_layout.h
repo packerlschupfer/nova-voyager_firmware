@@ -168,7 +168,12 @@ typedef struct __attribute__((packed)) {
  * stored bytes and cannot tell you how to interpret them), feeding garbage
  * jam and belt-break thresholds into live settings. A new magic makes every
  * pre-release block unmatchable for good. See SETTINGS_MAGIC in config.h. */
-#define EE_CUSTOM_MAGIC_VALUE  0xC1
+#define EE_CUSTOM_MAGIC_VALUE  0xC2
+
+/* The magic this block carried before v0.2.0. Kept ONLY so that a block left
+ * by a v0.1.0 unit can be recognised and reported rather than silently
+ * ignored - see eeprom_load_custom(). Never write it. */
+#define EE_CUSTOM_MAGIC_LEGACY 0xC1
 /* Layout version of the 0xB0 EEPROM block.
  *
  * Reset to 1 on 2026-08-30 alongside SETTINGS_VERSION, for the same reason:
@@ -179,13 +184,23 @@ typedef struct __attribute__((packed)) {
  * treated as absent and — unlike before — is NOT overwritten until the
  * operator saves, so a mismatch costs defaults for one boot rather than the
  * block. See eeprom_load_custom() in settings.c. */
-/* 2: the v2 layout above. The v1 struct and its migration are gone — they
- * existed to carry this machine's block across the format change, which they
- * did (verified: the stored block reads magic C1 version 02), so keeping them
- * would only be a legacy path for a version that no longer exists anywhere.
- * A block with any other version is rejected and the settings fall back to
- * defaults. */
-#define EE_CUSTOM_VERSION_NUM  2
+/* Back to 1 for v0.2.0, with the magic changed from 0xC1 to 0xC2 in the same
+ * breath - which is the only thing that makes resetting a counter downward
+ * safe, for exactly the reason the comment above spells out.
+ *
+ * Why now: v0.1.0 is the first release strangers actually run, and the
+ * 2026-09-06 register remap changed what three stored motor fields MEAN
+ * without changing the struct that holds them - torque_ramp was 50-2000
+ * (factory 75) and is now the MCB's SR, 1000-10000; pulse_max went 185 -> 50;
+ * ir_offset 400 -> 82. A v0.1.0 block passes magic, version and checksum with
+ * all three values valid-looking and wrong, because a checksum covers the
+ * bytes and says nothing about how they are read. Only
+ * motor_send_param_checked()'s range test stood between those values and the
+ * motor controller.
+ *
+ * The new magic retires every pre-v0.2.0 block for good, so the counter starts
+ * at 1 with no number burned behind it and only ever goes up from here. */
+#define EE_CUSTOM_VERSION_NUM  1
 
 // Read/write helpers
 bool eeprom_load_oem_settings(void* settings);

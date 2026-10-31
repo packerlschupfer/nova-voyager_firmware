@@ -214,6 +214,20 @@ static bool eeprom_load_custom(settings_t* s) {
         if (settings_unpack_custom(&c, s)) {
             return true;
         }
+        /* A block left by a pre-v0.2.0 firmware. Its magic was retired on
+         * purpose (see EE_CUSTOM_MAGIC_LEGACY), so without this branch the
+         * operator would get a full settings reset and no reason for it -
+         * the message path below only fires when the magic MATCHES. Someone
+         * upgrading from v0.1.0 deserves to be told why their machine came
+         * back on defaults. */
+        if (c.magic == EE_CUSTOM_MAGIC_LEGACY) {
+            uart_puts("Settings: EEPROM block is from a pre-v0.2.0 firmware "
+                      "- using defaults (block left intact)\r\n");
+            uart_puts("Settings: motor parameters changed meaning in v0.2.0; "
+                      "check Menu > Motor before cutting\r\n");
+            return false;
+        }
+
         /* A wrong-version blob is not a transient error — do not retry it. */
         if (c.magic == EE_CUSTOM_MAGIC_VALUE && c.version != EE_CUSTOM_VERSION_NUM) {
             uart_puts("Settings: EEPROM block is layout v");
@@ -504,6 +518,14 @@ void settings_init(void) {
             mirrored.checksum == calc_checksum(&mirrored)) {
             memcpy(&loaded, &mirrored, sizeof(settings_t));
             uart_puts("Settings: flash mirror valid\r\n");
+        } else if (mirrored.magic == SETTINGS_MAGIC_LEGACY) {
+            /* Retired alongside the EEPROM block's magic in v0.2.0. Only the
+             * success case used to print anything, so a dropped mirror cost
+             * the operator the fields ONLY the mirror holds - interface.*,
+             * material/bit/diameter, display units - with nothing in the log
+             * to connect that to the upgrade they just did. */
+            uart_puts("Settings: flash mirror is from a pre-v0.2.0 firmware "
+                      "- ignored (interface and CalcRPM settings reset)\r\n");
         }
 
         eeprom_load_oem_into(&loaded);
