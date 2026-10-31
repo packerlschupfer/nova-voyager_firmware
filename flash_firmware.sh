@@ -198,6 +198,9 @@ ORIGINAL_BOOTLOADER="$ASSETS_DIR/firmware/bootloader_gd32_backup.bin"
 # production bootloader, which has no pad.
 PAD_LO=$((0x130))
 PAD_HI=$((0x49F))
+# The flash cell that has rotted six times, offset from 0x08000000. The pad in
+# the bootloader's diag build is sized to swallow it.
+DEFECT_OFF=$((0x488))
 
 verify_bootloader_intact() {
     local img="${BOOTLOADER_BIN:-$CUSTOM_BOOTLOADER}"
@@ -209,13 +212,38 @@ verify_bootloader_intact() {
     size=$(stat -c%s "$img")
 
     echo_step "Verifying bootloader region intact (${size} bytes)..."
+    # Say WHICH BYTES, and against what. The comparison covers only as many
+    # bytes as the locally built reference image happens to be, and the
+    # reference is whatever is in the sibling tree's build directory - which
+    # `quick` never rebuilds.
+    #
+    # This matters because the message below used to read "pad clean"
+    # unconditionally, and on 2026-10-31 it said that twice while comparing a
+    # 792-byte nova_bootloader_120 image built two months earlier. 792 bytes is
+    # 0x000-0x317. The defect at 0x488 was not in the window, and neither was
+    # most of the pad (0x130-0x49F). "Clean" meant "the first 792 bytes match",
+    # which is not what a reader took from it.
+    printf '  comparing 0x%08X-0x%08X against %s\n' \
+        $((0x08000000)) $((0x08000000 + size - 1)) "$(basename "$(dirname "$img")")/$(basename "$img")"
+    if [ "$size" -le "$DEFECT_OFF" ]; then
+        echo_warn "window STOPS SHORT of the known defect at 0x$(printf %08X $((0x08000000+DEFECT_OFF)))"
+        echo_warn "- a clean result below says nothing about that address."
+    fi
     remote_put "$img" /tmp/bl_reference.bin
     if remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
             -c 'init' -c 'halt' \
             -c 'dump_image /tmp/bl_readback.bin 0x08000000 ${size}' \
             -c 'reset run' -c 'shutdown' >/dev/null 2>&1
             cmp -s /tmp/bl_readback.bin /tmp/bl_reference.bin"; then
-        echo "  Bootloader intact (pad clean)."
+        # Scope the claim to what was actually compared.
+        if [ "$size" -gt "$PAD_HI" ]; then
+            echo "  Bootloader intact (pad covered and clean)."
+        elif [ "$size" -gt "$DEFECT_OFF" ]; then
+            echo "  Bootloader intact over 0-$(printf 0x%X $((size-1))) (defect address covered; pad only partly)."
+        else
+            echo "  First ${size} bytes match the reference. NOT a statement about"
+            echo "  the defect at 0x$(printf %08X $((0x08000000+DEFECT_OFF))) or the pad - both are past the window."
+        fi
         return 0
     fi
 
