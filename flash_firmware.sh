@@ -62,6 +62,74 @@ remote_put() {
     fi
 }
 
+# Say which bootloader is about to be built, and refuse a development one
+# unless asked twice.
+#
+# WHY: this script builds the bootloader from whatever is checked out in the
+# sibling tree. On 2026-10-31 that was diag/canary-pad - a never-tested
+# diagnostic build that fills 0x08000130-0x0800049F with 0xA5 and relocates
+# Default_Handler - and `custom` or `quickboot` would have flashed it into the
+# board's first 12 KB without a word. The firmware repo cannot see that tree's
+# state, so it has to look.
+#
+# A release bootloader means: HEAD exactly on a tag, and nothing modified.
+# Anything else needs --allow-dev-bootloader, which also prints what it is.
+bootloader_tree_check() {
+    if [ ! -d "$BOOTLOADER_DIR" ]; then
+        echo_err "Bootloader tree not found: $BOOTLOADER_DIR"
+        echo_err "This path needs the companion bootloader cloned as a sibling:"
+        echo_err "  git clone https://github.com/Packerlschupfer/nova-voyager_bootloader"
+        exit 1
+    fi
+    if ! git -C "$BOOTLOADER_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        echo_warn "Bootloader tree is not a git checkout - cannot tell what it is."
+        [ "$ALLOW_DEV_BOOTLOADER" = "1" ] && return 0
+        echo_err "Refusing. Pass --allow-dev-bootloader if that is deliberate."
+        exit 1
+    fi
+
+    local branch desc dirty
+    branch=$(git -C "$BOOTLOADER_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+    desc=$(git -C "$BOOTLOADER_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)
+    dirty=$(git -C "$BOOTLOADER_DIR" status --porcelain 2>/dev/null)
+
+    echo_info "Bootloader source: $branch @ $desc   (env: $BOOTLOADER_ENV)"
+
+    # nova_bootloader_pad exists ONLY on the diagnostic branch - it fills
+    # 0x08000130-0x0800049F with 0xA5 and relocates Default_Handler. It is
+    # never a release artefact, so it needs the flag whatever the tag says.
+    if [ "$BOOTLOADER_ENV" = "nova_bootloader_pad" ] && [ "$ALLOW_DEV_BOOTLOADER" != "1" ]; then
+        echo_err "BOOTLOADER_ENV=nova_bootloader_pad is a diagnostic build, not a release."
+        echo_err "Pass --allow-dev-bootloader if you mean it."
+        exit 1
+    fi
+
+    # A release bootloader: HEAD exactly on a v* tag, nothing modified. The env
+    # name alone is not sufficient evidence - a diagnostic branch can change
+    # the normal envs too - so this keys on the tag and on a clean tree.
+    local exact_tag
+    exact_tag=$(git -C "$BOOTLOADER_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)
+    case "$exact_tag" in
+        v*) if [ -z "$dirty" ]; then return 0; fi ;;
+    esac
+
+    if [ "$ALLOW_DEV_BOOTLOADER" = "1" ]; then
+        echo_warn "Flashing a NON-RELEASE bootloader: $branch @ $desc"
+        echo_warn "You asked for this with --allow-dev-bootloader."
+        return 0
+    fi
+
+    echo_err "Refusing to flash a non-release bootloader."
+    echo_err "  tree:   $BOOTLOADER_DIR"
+    echo_err "  branch: $branch"
+    echo_err "  commit: $desc${dirty:+  (uncommitted changes present)}"
+    echo_err ""
+    echo_err "The bootloader occupies the first 12 KB of flash and is what makes"
+    echo_err "the board recoverable. Check out a tagged release there, or pass"
+    echo_err "--allow-dev-bootloader if you know exactly what you are flashing."
+    exit 1
+}
+
 # Render a command the way the operator would have to type it, for the
 # copy-and-paste hints printed when an automated step fails.
 remote_hint() {
@@ -240,10 +308,19 @@ for arg in "$@"; do
     fi
 done
 
+# Parse --allow-dev-bootloader. See bootloader_tree_check() below for why.
+ALLOW_DEV_BOOTLOADER=0
+for arg in "$@"; do
+    if [[ "$arg" == "--allow-dev-bootloader" ]]; then
+        ALLOW_DEV_BOOTLOADER=1
+    fi
+done
+
 # Remove flags from args
 set -- "${@/--dfu/}"
 set -- "${@/--72mhz/}"
 set -- "${@/--debug/}"
+set -- "${@/--allow-dev-bootloader/}"
 
 CUSTOM_BOOTLOADER="$BOOTLOADER_DIR/.pio/build/$BOOTLOADER_ENV/firmware.bin"
 CUSTOM_FW="$FIRMWARE_DIR/.pio/build/$FIRMWARE_ENV/firmware.bin"
@@ -460,6 +537,7 @@ case "$1" in
 
         # Build first
         echo_step "Building custom bootloader ($BOOTLOADER_ENV)..."
+        bootloader_tree_check
         cd "$BOOTLOADER_DIR" && pio run -e "$BOOTLOADER_ENV"
 
         echo_step "Building custom firmware ($FIRMWARE_ENV)..."
@@ -564,6 +642,7 @@ case "$1" in
     quickboot)
         # Flash both bootloader and firmware FAST (assumes unlocked)
         echo_step "Quick flash custom bootloader ($BOOTLOADER_ENV) + firmware ($FIRMWARE_ENV, assumes unlocked)"
+        bootloader_tree_check
         cd "$BOOTLOADER_DIR" && pio run -e "$BOOTLOADER_ENV"
         cd "$FIRMWARE_DIR" && pio run -e "$FIRMWARE_ENV"
         echo_step "Fast write with st-flash..."
@@ -598,6 +677,7 @@ case "$1" in
         echo "  versions       - List available official versions"
         echo ""
         echo "Options:"
+        echo "  --allow-dev-bootloader - Permit a non-release bootloader tree"
         echo "  --dfu, --72mhz - Use 72MHz bootloader with USB DFU support"
         echo "                   Default: 120MHz bootloader (ST-Link only)"
         echo ""

@@ -116,7 +116,31 @@ For bench setup, wiring, and first-flash instructions see
 | Motor link | USART3 @ 9600 baud to MCB (Switched Reluctance Motor controller) |
 | Inputs | Rotary encoder + 7 buttons (EXTI), foot pedal |
 | Sensors | Depth (ADC), guard switch, E-Stop |
-| Bootloader | DFU at `0x08000000` (12 KB), application at `0x08003000` (244 KB) |
+| Bootloader | DFU at `0x08000000` (12 KB), application at `0x08003000` (242 KB + a 2 KB settings page) |
+
+### Bootloader pairing
+
+Verified against the bootloader source on 2026-10-31, because guessing at this
+is how panels get bricked:
+
+- **The app cannot tell which bootloader is installed.** There is no version
+  word at a fixed address and no handshake; the firmware can only infer from
+  its own clock, which is a heuristic. The `DFU` command says so rather than
+  pretending otherwise.
+- **The bootloader does not validate the application** beyond two range
+  checks — the initial stack pointer at `0x08003000` must land inside SRAM, and
+  the reset vector inside the app region. No CRC, no signature. An erased app
+  fails those checks, which is how the board falls back into DFU.
+- **A DFU update cannot erase your settings.** The reserved page at
+  `0x0803F800` is refused structurally: every write and erase goes through an
+  address check, a bare mass-erase request is refused, and the descriptor
+  advertises 121 sectors rather than 122. There are host-side tests for all
+  three.
+- **An ST-Link write can.** `st-flash` goes through none of that — a full-chip
+  erase (`./flash_firmware.sh erase`) or an image longer than 242 KB takes the
+  settings page with it. Back up your EEPROM first.
+- The DFU request word is cleared by the bootloader as soon as it reads it, so
+  a request cannot get stuck across a reset.
 
 ### Pin map
 

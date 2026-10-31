@@ -88,6 +88,16 @@ static uint8_t  at_target_count = 0;      // consecutive in-band samples so far
  * moves, and a torn entry is now genuinely the only residual race (one row,
  * and only for a live read).
  *
+ * CONFIRMED with the bootloader repo 2026-10-31, so this is a contract now
+ * rather than an observation: the bootloader writes exactly two regions of
+ * SRAM - its own .bss (from 0x20000000, 1076 bytes on the DFU build, empty on
+ * the 120 MHz one) and its stack, growing down from 0x2000C000. No RAM fill,
+ * no memset of SRAM, and it never touches .noinit, which sits about 13 KB
+ * clear of its .bss. The enforcement is one-sided though: the bootloader's
+ * linker asserts only that ITS .bss stays below the DFU hand-off word, not
+ * below this buffer, so our margin is arithmetic rather than checked. A 12 KB
+ * bootloader would have to grow .bss by 13 KB to reach us.
+ *
  * The buffer lives in .noinit (NOLOAD — see ldscript.ld) so that startup does
  * NOT clear it. This is not a micro-optimisation: on 2026-10-13 a jam trip on
  * the real machine coincided with an NRST reset, and the recorder lost the only
