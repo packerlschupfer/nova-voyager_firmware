@@ -251,9 +251,41 @@ verify_bootloader_intact() {
     local diffs
     diffs=$(remote_sh "cmp -l /tmp/bl_reference.bin /tmp/bl_readback.bin 2>/dev/null | head -60")
 
-    local outside
+    local outside ndiff
     outside=$(echo "$diffs" | awk -v lo="$PAD_LO" -v hi="$PAD_HI" \
         '{ off = $1 - 1; if (off < lo || off > hi) c++ } END { print c+0 }')
+    ndiff=$(echo "$diffs" | grep -c . || true)
+
+    # Tell "a cell rotted" apart from "this is a different build".
+    #
+    # The reference is whatever the sibling tree builds, and the board's
+    # bootloader has changed over its life - 72 MHz builds early on, _120
+    # since. Compare a _120 reference against a board holding the 3540-byte
+    # DFU build and essentially every byte differs, which the code below would
+    # have announced as LIVE CODE CORRUPTED and told the operator to rewrite
+    # the bootloader. Rewriting is the one operation that correlates with this
+    # flash defect, so crying wolf here can cause the very write that risks the
+    # cell.
+    #
+    # A rotted cell is one or a few bits. `cmp -l | head -60` caps the list, so
+    # hitting the cap means wholesale difference, not decay.
+    if [ "$ndiff" -ge 60 ]; then
+        echo ""
+        echo "  === DIFFERENT BUILD, not corruption ==="
+        echo "  ${ndiff}+ bytes differ in the first ${size}. That is not a weak cell,"
+        echo "  it is a different bootloader image. The reference here is:"
+        echo "      $(basename "$(dirname "$img")")/$(basename "$img")  (${size} bytes)"
+        echo "  and the board evidently holds something else. Known sizes:"
+        echo "      nova_bootloader_120   792 bytes   (no DFU)"
+        echo "      nova_bootloader      3540 bytes   (72 MHz, USB DFU)"
+        echo "      nova_bootloader_pad  4420 bytes   (diagnostic canary)"
+        echo ""
+        echo "  Do NOT reach for restore-bootloader on the strength of this."
+        echo "  Work out which build the board should have first; a needless"
+        echo "  rewrite is itself a programming cycle on the suspect page."
+        echo ""
+        return 1
+    fi
 
     echo ""
     if [ "$outside" -eq 0 ] && [ -n "$diffs" ]; then
