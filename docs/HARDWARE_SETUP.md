@@ -143,22 +143,40 @@ Console settings are **9600 8N1**, no flow control.
 ### A. USB-local (simplest)
 
 ST-Link plugged into your dev machine; OpenOCD / `st-flash` run locally.
-Edit `flash_firmware.sh` and set `PI_HOST=""` *or* run the OpenOCD
-commands by hand — the script's `run_openocd` helper in
-`scripts/gd32_unlock_flash.sh` already has a `local` mode:
+Set `PI_HOST` to the empty string and every step runs on this machine — no
+editing required:
+
+```bash
+PI_HOST="" ./flash_firmware.sh quick
+PI_HOST="" ./flash_firmware.sh custom      # first install: unlock + bootloader + app
+export PI_HOST=""                          # or set it once for the session
+```
+
+The empty value is honoured deliberately (`${PI_HOST-default}`, not
+`${PI_HOST:-default}`), so an explicitly empty `PI_HOST` cannot be silently
+replaced by the author's Raspberry Pi address.
+
+You need `openocd` and `stlink-tools` (`st-flash`) installed locally. The
+unlock helper has its own local mode too:
 
 ```bash
 ./scripts/gd32_unlock_flash.sh local
 ```
 
-You need `openocd` and `stlink-tools` (`st-flash`) installed locally.
+> Note on how well-trodden this path is: the author's probe lives on the Pi
+> (topology B), so the local branch is exercised for file staging and command
+> dispatch but the SWD writes themselves are routinely tested only over
+> topology B. If something misbehaves locally, that is where to look first,
+> and the script prints the exact `st-flash` command for every step it runs so
+> you can take over by hand.
 
 ### B. Pi-tethered (matches the bundled scripts)
 
 ST-Link plugged into a Raspberry Pi on the same network; the dev
 machine SSHes to the Pi and drives flashing remotely. This is the
-topology `flash_firmware.sh` assumes — useful when the drill press is
-not next to your laptop.
+topology `flash_firmware.sh` defaults to — useful when the drill press is
+not next to your laptop. Set `PI_HOST=you@your-pi` to point it at yours;
+it defaults to the author's, which will not resolve for you.
 
 ```
 dev machine ── SSH ──→ Pi ── USB ──→ ST-Link ── SWD ──→ HMI board

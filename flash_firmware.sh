@@ -17,7 +17,49 @@
 
 set -e
 
-PI_HOST="pi@192.168.16.62"
+# Where the ST-Link lives.
+#
+#   unset        -> the author's Pi, the default this script has always used
+#   PI_HOST=""   -> the probe is on THIS machine; run everything locally
+#   PI_HOST=x@y  -> that host
+#
+# `${PI_HOST-...}` and not `${PI_HOST:-...}` on purpose: the first honours an
+# explicitly empty value, the second would silently replace it with the default
+# and send a local user's flash to a Raspberry Pi they do not own.
+#
+# docs/HARDWARE_SETUP.md has documented the PI_HOST="" mode since the file was
+# written. It did not exist: every path called `ssh "$PI_HOST"` unconditionally,
+# so a clone with no Pi at 192.168.16.62 failed at the documented Quick Start
+# with an ssh error. The fork on 2026-10-30 made that somebody else's problem.
+PI_HOST="${PI_HOST-pi@192.168.16.62}"
+
+# Run a shell snippet where the probe is.
+remote_sh() {
+    if [ -n "$PI_HOST" ]; then
+        remote_sh "$1"
+    else
+        bash -c "$1"
+    fi
+}
+
+# Put a file where the probe is. Destinations are all under /tmp.
+remote_put() {
+    if [ -n "$PI_HOST" ]; then
+        remote_put "$1" $2
+    else
+        cp -f "$1" "$2"
+    fi
+}
+
+# Render a command the way the operator would have to type it, for the
+# copy-and-paste hints printed when an automated step fails.
+remote_hint() {
+    if [ -n "$PI_HOST" ]; then
+        echo "ssh $PI_HOST \"$1\""
+    else
+        echo "$1"
+    fi
+}
 
 # Auto-detect project directory: use script location if it has platformio.ini,
 # otherwise fall back to the old dev location
@@ -88,8 +130,8 @@ verify_bootloader_intact() {
     size=$(stat -c%s "$img")
 
     echo_step "Verifying bootloader region intact (${size} bytes)..."
-    scp -q "$img" "$PI_HOST:/tmp/bl_reference.bin"
-    if ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
+    remote_put "$img" /tmp/bl_reference.bin
+    if remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
             -c 'init' -c 'halt' \
             -c 'dump_image /tmp/bl_readback.bin 0x08000000 ${size}' \
             -c 'reset run' -c 'shutdown' >/dev/null 2>&1
@@ -100,7 +142,7 @@ verify_bootloader_intact() {
 
     # cmp -l gives 1-based byte offsets with OCTAL values.
     local diffs
-    diffs=$(ssh "$PI_HOST" "cmp -l /tmp/bl_reference.bin /tmp/bl_readback.bin 2>/dev/null | head -60")
+    diffs=$(remote_sh "cmp -l /tmp/bl_reference.bin /tmp/bl_readback.bin 2>/dev/null | head -60")
 
     local outside
     outside=$(echo "$diffs" | awk -v lo="$PAD_LO" -v hi="$PAD_HI" \
@@ -138,8 +180,8 @@ restore_bootloader() {
     local size
     size=$(stat -c%s "$img")
     echo_step "Restoring bootloader (${size} bytes)..."
-    scp -q "$img" "$PI_HOST:/tmp/bl_reference.bin"
-    ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
+    remote_put "$img" /tmp/bl_reference.bin
+    remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
         -c 'init' -c 'halt' \
         -c 'mww 0x40022004 0x45670123' -c 'mww 0x40022004 0xCDEF89AB' \
         -c 'flash write_image erase /tmp/bl_reference.bin 0x08000000' \
@@ -210,7 +252,7 @@ echo_info() { echo -e "${CYAN}$1${NC}"; }
 # This is required when flash protection persists after mass erase
 unlock_flash() {
     echo_step "Unlocking GD32 flash controller..."
-    ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg \
+    remote_sh "sudo openocd -f interface/stlink.cfg \
         -c 'transport select swd' \
         -f target/stm32f1x.cfg \
         -c 'init; reset halt; \
@@ -224,7 +266,7 @@ mass_erase() {
     echo_step "Mass erasing flash..."
     echo_warn "MASS ERASE wipes ENTIRE flash (bootloader + firmware)!"
     echo_warn "You must reflash BOTH after this operation."
-    ssh "$PI_HOST" "sudo st-flash --connect-under-reset erase" || true
+    remote_sh "sudo st-flash --connect-under-reset erase" || true
 }
 
 # Flash immediately after erase - NO reset in between!
@@ -264,12 +306,12 @@ erase_and_flash_both() {
     # and every explicit check here becomes unreachable. That is not academic:
     # on 2026-09-05 the erase ran, the assignment aborted the script before the
     # writes, and the board was left blank with nothing printed to say so.
-    scp "$bl_file" "$PI_HOST:/tmp/bootloader.bin"
-    scp "$fw_file" "$PI_HOST:/tmp/firmware.bin"
+    remote_put "$bl_file" /tmp/bootloader.bin
+    remote_put "$fw_file" /tmp/firmware.bin
 
     echo_step "Unlocking and erasing (OpenOCD)..."
     local erase_out
-    erase_out=$(ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg \
+    erase_out=$(remote_sh "sudo openocd -f interface/stlink.cfg \
         -c 'transport select swd' \
         -c 'adapter speed 1800' \
         -f target/stm32f1x.cfg \
@@ -292,7 +334,7 @@ erase_and_flash_both() {
     # looks identical to a dead one.
     echo_step "Writing bootloader + firmware (st-flash)..."
     local write_out
-    write_out=$(ssh "$PI_HOST" "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000 2>&1; \
+    write_out=$(remote_sh "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000 2>&1; \
                                 echo '---SPLIT---'; \
                                 sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000 2>&1" 2>&1) || true
     local wrote
@@ -302,15 +344,15 @@ erase_and_flash_both() {
     if [ "$wrote" -ne 2 ]; then
         echo_err "WRITE FAILED after a successful erase — THE BOARD IS NOW BLANK."
         echo_err "It is not damaged. Recover with:"
-        echo_err "  ssh $PI_HOST \"sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000\""
-        echo_err "  ssh $PI_HOST \"sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000\""
-        echo_err "  ssh $PI_HOST \"sudo st-flash reset\""
+        echo_err "  $(remote_hint 'sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000')"
+        echo_err "  $(remote_hint 'sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000')"
+        echo_err "  $(remote_hint 'sudo st-flash reset')"
         echo_err ""
         echo_err "If st-flash answers LIBUSB_ERROR_IO, flash over DFU instead. A"
         echo_err "blank application region makes the OEM bootloader fall back to"
         echo_err "USB DFU (it enumerates as 0483:df11), which is its own designed"
         echo_err "recovery path and needs no ST-Link at all:"
-        echo_err "  ssh $PI_HOST \"sudo dfu-util -a 0 -s 0x08003000:leave -D /tmp/firmware.bin\""
+        echo_err "  $(remote_hint 'sudo dfu-util -a 0 -s 0x08003000:leave -D /tmp/firmware.bin')"
         echo_err ""
         echo_err "That recovers the APPLICATION only. The DFU descriptor reads"
         echo_err "  @Internal Flash /0x08000000/12*001Ka,116*001Kg"
@@ -320,12 +362,12 @@ erase_and_flash_both() {
         exit 1
     fi
 
-    ssh "$PI_HOST" "sudo st-flash reset" >/dev/null 2>&1
+    remote_sh "sudo st-flash reset" >/dev/null 2>&1
 
     # Read back both vector tables. "Verified" from the writer is not evidence
     # the part actually boots — see docs on the recurring bootloader corruption.
     echo_step "Verifying vector tables..."
-    ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg -c 'transport select swd' \
+    remote_sh "sudo openocd -f interface/stlink.cfg -c 'transport select swd' \
         -f target/stm32f1x.cfg -c 'init' -c 'mdw 0x08000000 2' -c 'mdw 0x08003000 2' \
         -c 'shutdown'" 2>&1 | grep -E "^0x0800" || true
 }
@@ -334,16 +376,16 @@ flash_bootloader() {
     local bl_file="$1"
     local bl_name="$2"
     echo_step "Flashing $bl_name bootloader..."
-    scp "$bl_file" "$PI_HOST:/tmp/bootloader.bin"
-    ssh "$PI_HOST" "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000"
+    remote_put "$bl_file" /tmp/bootloader.bin
+    remote_sh "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000"
 }
 
 flash_firmware() {
     local fw_file="$1"
     local fw_name="$2"
     echo_step "Flashing $fw_name firmware..."
-    scp "$fw_file" "$PI_HOST:/tmp/firmware.bin"
-    ssh "$PI_HOST" "sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000"
+    remote_put "$fw_file" /tmp/firmware.bin
+    remote_sh "sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000"
 }
 
 list_versions() {
@@ -480,14 +522,14 @@ case "$1" in
         # Costs about a second. If the corruption stops recurring, that is the
         # evidence; if it does not, this is harmless and can come out.
         echo_step "Reset-halt (program at HSI 8 MHz, not 120 MHz)..."
-        ssh "$PI_HOST" "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
+        remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
             -c 'init' -c 'reset halt' -c 'shutdown' >/dev/null 2>&1" || true
 
         echo_step "Fast write with st-flash..."
-        scp -q "$CUSTOM_FW" "$PI_HOST:/tmp/firmware.bin"
-        ssh "$PI_HOST" "sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000"
+        remote_put "$CUSTOM_FW" /tmp/firmware.bin
+        remote_sh "sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000"
         echo_step "Resetting MCU..."
-        ssh "$PI_HOST" "sudo st-flash reset"
+        remote_sh "sudo st-flash reset"
         verify_bootloader_intact
         echo_step "Done!"
         ;;
@@ -502,12 +544,12 @@ case "$1" in
         cd "$BOOTLOADER_DIR" && pio run -e "$BOOTLOADER_ENV"
         cd "$FIRMWARE_DIR" && pio run -e "$FIRMWARE_ENV"
         echo_step "Fast write with st-flash..."
-        scp "$CUSTOM_BOOTLOADER" "$PI_HOST:/tmp/bootloader.bin"
-        scp "$CUSTOM_FW" "$PI_HOST:/tmp/firmware.bin"
-        ssh "$PI_HOST" "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000 && \
+        remote_put "$CUSTOM_BOOTLOADER" /tmp/bootloader.bin
+        remote_put "$CUSTOM_FW" /tmp/firmware.bin
+        remote_sh "sudo st-flash --flash=256k write /tmp/bootloader.bin 0x08000000 && \
             sudo st-flash --flash=256k write /tmp/firmware.bin 0x08003000"
         echo_step "Resetting MCU..."
-        ssh "$PI_HOST" "sudo st-flash reset"
+        remote_sh "sudo st-flash reset"
         verify_bootloader_intact
         echo_step "Done!"
         ;;
@@ -559,50 +601,8 @@ case "$1" in
         ;;
 esac
 
-# Recovery flash after mass erase (flashes both bootloader and firmware)
-recover() {
-    echo_color "$GREEN" "==> RECOVERY FLASH (Bootloader + Firmware)"
-    echo ""
-    echo "This will:"
-    echo "  1. Flash 120MHz bootloader at 0x08000000"
-    echo "  2. Flash custom firmware at 0x08003000"
-    echo ""
+# recover() lived here. Deleted 2026-10-31: it was unreachable from the usage
+# list, undocumented, and used $PI_IP - a variable this script never sets, so
+# it would have scp'd to the host "pi@". erase_and_flash_both() (the `custom`
+# and `quickboot` paths) does the same job and is the one that gets tested.
 
-    # Copy files to Pi
-    echo_color "$YELLOW" "Copying bootloader and firmware to Pi..."
-    scp nova_bootloader/.pio/build/nova_bootloader_120/firmware.bin pi@$PI_IP:/tmp/bootloader_120.bin
-    scp .pio/build/release_120/firmware.bin pi@$PI_IP:/tmp/firmware.bin
-
-    # Flash bootloader
-    echo_color "$GREEN" "==> Flashing 120MHz bootloader..."
-    ssh pi@$PI_IP "st-flash write /tmp/bootloader_120.bin 0x08000000"
-
-    if [ $? -ne 0 ]; then
-        echo_color "$RED" "ERROR: Bootloader flash failed!"
-        echo "Try: ./flash_firmware.sh unlock"
-        exit 1
-    fi
-
-    # Flash firmware
-    echo_color "$GREEN" "==> Flashing custom firmware..."
-    ssh pi@$PI_IP "st-flash write /tmp/firmware.bin 0x08003000"
-
-    if [ $? -ne 0 ]; then
-        echo_color "$RED" "ERROR: Firmware flash failed!"
-        exit 1
-    fi
-
-    # Reset
-    echo_color "$GREEN" "==> Resetting MCU..."
-    ssh pi@$PI_IP "st-flash reset"
-
-    echo_color "$GREEN" "==> Recovery complete!"
-    echo ""
-    echo "System should boot normally. Check serial console."
-}
-
-# Add recover to case statement
-if [ "$1" == "recover" ]; then
-    recover
-    exit 0
-fi
