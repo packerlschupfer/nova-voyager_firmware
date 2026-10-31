@@ -650,7 +650,8 @@ void cmd_help(void) {
     // Forward reference to command table (defined later in file)
     extern const cmd_entry_t cmd_table[];
 
-    uart_puts("Nova Voyager FreeRTOS Console " FW_VERSION_STRING "\r\n");
+    uart_puts("Nova Voyager FreeRTOS Console " FW_VERSION_STRING
+              " [" FW_BUILD_STRING "]\r\n");
     uart_puts("Available commands:\r\n");
 
     // Auto-generate from command table (always accurate!)
@@ -680,6 +681,11 @@ void cmd_help(void) {
 }
 
 void cmd_status(void) {
+    /* Build identity first. STATUS is the command everyone runs and pastes,
+     * and until now nothing in its output - or in DUMP, or in the crash dump -
+     * said which firmware produced it. A report that does not identify its
+     * build cannot be acted on. */
+    uart_puts("Firmware: " FW_VERSION_STRING " [" FW_BUILD_STRING "]\r\n");
     STATE_LOCK();
     uart_puts("State: ");
     switch (g_state.state) {

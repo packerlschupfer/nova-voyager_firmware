@@ -632,7 +632,10 @@ int main(void) {
 
     if (full_boot) {
         uart_puts("=== Nova Voyager FreeRTOS Firmware ===\r\n");
-        uart_puts(FW_VERSION_STRING "\r\n");
+        /* Exact build identity, because this is the line people paste into a
+         * bug report: the git describe plus which of the three published
+         * builds it is. */
+        uart_puts(FW_VERSION_STRING " [" FW_BUILD_STRING "]\r\n");
         uart_puts("Initializing...\r\n");
     }
 
@@ -770,7 +773,12 @@ int main(void) {
         // buzzer_beep(BEEP_BOOT_STAGE);  // Disabled for fast boot  // Stage 4: Post-warning
     } else if (full_boot) {
         // Show version splash briefly during boot progress (no extra delay)
-        display_boot_message("Nova Voyager", FW_VERSION_STRING);
+        /* FW_VERSION_FALLBACK, not FW_VERSION_STRING: the describe output can
+         * be "v0.2.0-5-gaf0ca1c", and display_boot_message() prints through
+         * lcd_print() without padding or truncating, so 17 characters would
+         * run off the end of a 16-column row and into the next one. The
+         * release number fits; the serial banner carries the precise value. */
+        display_boot_message("Nova Voyager", FW_VERSION_FALLBACK);
         // buzzer_beep(BEEP_BOOT_STAGE);  // Disabled for fast boot  // Stage 4: Post-splash
     }
     // Soft boot: skip splash, go straight to UI

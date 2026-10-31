@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        # fetch-depth: 0 because the build stamps `git describe` into the
+        # binary (extra_script.py). The default shallow checkout has no tag
+        # reachable, so a release would identify itself by bare hash.
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -33,12 +38,26 @@ jobs:
         # together with the platform/package pins in platformio.ini.
         run: pip install platformio==6.1.19
 
+      # Must come before check-pins.sh: that check inspects RESOLVED package
+      # versions, so on a cold cache it has nothing to inspect and fails.
+      # ci.yml gained this step on 2026-10-11 for exactly that reason and
+      # release.yml did not — which would have failed the first tag pushed
+      # after a 7-day cache eviction, publishing nothing at all.
+      - name: Install project packages
+        run: pio pkg install -e nova_voyager
+
       # Fail loudly if the pins are not actually enforced. A pin declared in
       # [common] but not referenced by an env is silently ignored — that is how
       # the first v0.1.0 release ended up built against a different HAL than the
       # hardware-validated binary.
       - name: Verify toolchain pins are enforced
         run: ./scripts/check-pins.sh nova_voyager
+
+      # The tag and the in-tree fallback version must agree before anything is
+      # published under that tag's name.
+      - name: Verify the version block matches the tag
+        run: ./scripts/check-version.sh "${GITHUB_REF_NAME}"
+
       # A gate nothing calls is not a gate. v0.1.0 shipped with ALIGN
       # energizing the spindle without consulting safety_can_start_motor().
       - name: Verify the motor safety gate is not bypassed
@@ -48,6 +67,11 @@ jobs:
       # exercising a layout the firmware does not ship.
       - name: Verify the settings test mirror matches the header
         run: ./scripts/check-settings-mirror.sh
+      # 506 native tests gate CI but did not gate releases, so a release could
+      # ship code no test run had seen.
+      - name: Unit tests
+        run: pio test -e native
+
       - name: Build release firmware
         run: pio run -e nova_voyager -e nova_voyager_games -e nova_voyager_demo
 
@@ -56,11 +80,16 @@ jobs:
       - name: Collect release artifacts
         run: |
           mkdir -p release
+          # Name assets with the version. They used to be "nova_voyager.bin"
+          # with nothing to say which release they came from, and since the
+          # v0.1.0 tag was republished ~50 times, identically-named binaries
+          # with different contents are already in circulation.
+          ver="${GITHUB_REF_NAME}"
           for env in nova_voyager nova_voyager_games nova_voyager_demo; do
             for ext in bin elf; do
               src=".pio/build/$env/firmware.$ext"
               if [ -f "$src" ]; then
-                cp "$src" "release/${env}.${ext}"
+                cp "$src" "release/${env}-${ver}.${ext}"
               fi
             done
           done

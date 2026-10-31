@@ -60,6 +60,12 @@ jobs:
       # exercising a layout the firmware does not ship.
       - name: Verify the settings test mirror matches the header
         run: ./scripts/check-settings-mirror.sh
+
+      # Keeps FW_VERSION_MAJOR/MINOR/PATCH and FW_VERSION_FALLBACK in step with
+      # each other on every push, so the release-time tag comparison is the
+      # only thing left to check when a tag is cut.
+      - name: Verify the version block is self-consistent
+        run: ./scripts/check-version.sh
       - name: Build firmware
         run: pio run -e nova_voyager -e nova_voyager_games -e nova_voyager_demo -e debug
 

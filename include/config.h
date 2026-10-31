@@ -840,10 +840,47 @@
 /*===========================================================================*/
 
 #define FW_VERSION_MAJOR    0
-#define FW_VERSION_MINOR    1
+#define FW_VERSION_MINOR    2
 #define FW_VERSION_PATCH    0
-#define FW_VERSION_STRING   "v0.1.0-RTOS"
-#define FW_BUILD_TYPE       "Debug"     // "Custom", "Debug", "Release"
+
+/* The release this tree is working towards. It is the FALLBACK identity, used
+ * only when there is no git metadata to describe the build - a source tarball
+ * with no .gitattributes substitution, essentially. Keep it in step with the
+ * tag; scripts/check-version.sh fails the release if a vX.Y.Z tag and these
+ * three numbers disagree, which is the whole reason the numbers are still
+ * here. */
+#define FW_VERSION_FALLBACK "v0.2.0"
+
+/* What the firmware actually reports.
+ *
+ * FW_GIT_DESCRIBE is injected by extra_script.py from
+ * `git describe --tags --dirty --always`, so a build identifies the exact
+ * commit it came from: "v0.2.0", "v0.2.0-5-gaf0ca1c", "v0.2.0-dirty".
+ *
+ * Why this is not a hand-maintained constant any more: it was one, it said
+ * "v0.1.0-RTOS", and it kept saying that through 35 commits and about 50
+ * republished release builds. Every bug report quoted the same string
+ * regardless of what was flashed, which made the string worse than useless -
+ * it looked like information. */
+#ifdef FW_GIT_DESCRIBE
+#define FW_VERSION_STRING   FW_GIT_DESCRIBE
+#else
+#define FW_VERSION_STRING   FW_VERSION_FALLBACK
+#endif
+
+/* Which of the three published builds this is - nova_voyager,
+ * nova_voyager_games or nova_voyager_demo. They are not interchangeable when
+ * something has to be diagnosed: the games and demo builds carry a 40-sample
+ * jam flight recorder rather than 160 (see MLOAD_TRACE_LEN), and the demo
+ * writes no settings at all. Nothing told them apart at runtime before. */
+#ifdef FW_BUILD_ENV
+#define FW_BUILD_STRING     FW_BUILD_ENV
+#else
+#define FW_BUILD_STRING     "unknown"
+#endif
+
+/* FW_BUILD_TYPE is gone. It had zero readers anywhere in src/, include/ or
+ * test/, and it said "Debug" in the builds we publish as releases. */
 
 /*===========================================================================*/
 /* Motor Power Level Configuration (discovered 2026-01-25)                    */

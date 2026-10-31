@@ -1,0 +1,10 @@
+# Substituted by `git archive` (which is what GitHub's source tarballs are),
+# so a build from a downloaded tarball can still identify itself. With no .git
+# directory, extra_script.py finds no metadata and config.h falls back to
+# FW_VERSION_FALLBACK; this line gives the tarball the real describe output
+# instead.
+#
+# Only `git archive` substitutes it. In a working clone the file below keeps
+# the literal $Format:...$ text, which is why extra_script.py prefers calling
+# git directly and treats this as the fallback path.
+.tarball-version export-subst
