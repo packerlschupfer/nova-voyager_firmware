@@ -34,18 +34,29 @@ set -e
 PI_HOST="${PI_HOST-pi@192.168.16.62}"
 
 # Run a shell snippet where the probe is.
+#
+# NOTE the explicit `command ssh`: this function's body once read
+# `remote_sh "$1"` here, because the mechanical rewrite that introduced these
+# helpers replaced every `ssh "$PI_HOST" ` in the file - including the one
+# inside the helper itself. That is unbounded recursion, bash exhausts its
+# stack and SEGFAULTS, and `bash -n` sees nothing wrong because the syntax is
+# fine. It got as far as the machine because the helpers were hand-tested with
+# PI_HOST="" - the local branch - while the default branch was the broken one.
 remote_sh() {
     if [ -n "$PI_HOST" ]; then
-        remote_sh "$1"
+        command ssh "$PI_HOST" "$1"
     else
         bash -c "$1"
     fi
 }
 
 # Put a file where the probe is. Destinations are all under /tmp.
+#
+# `command scp` for the same reason as remote_sh above: the rewrite that
+# created this helper replaced its own body with a call to itself.
 remote_put() {
     if [ -n "$PI_HOST" ]; then
-        remote_put "$1" $2
+        command scp -q "$1" "$PI_HOST:$2"
     else
         cp -f "$1" "$2"
     fi
@@ -194,13 +205,25 @@ restore_bootloader() {
 #   nova_bootloader     - 72MHz, USB DFU works
 #   nova_bootloader_120 - 120MHz, ST-Link only (default)
 BOOTLOADER_ENV="nova_bootloader_120"
-FIRMWARE_ENV="release_120"  # Must match bootloader clock speed!
+# nova_voyager, not release_120, even though nova_voyager merely extends it:
+# the bench build should be the SAME ENV as the published asset, so a board
+# flashed from here reports the same FW_BUILD_ENV a release reports. It said
+# [release_120] on the machine while releases say [nova_voyager], which is a
+# name nobody could match to a download.
+FIRMWARE_ENV="nova_voyager"  # Must match bootloader clock speed!
 
 # Parse --dfu flag to use 72MHz bootloader with USB DFU support
 for arg in "$@"; do
     if [[ "$arg" == "--dfu" || "$arg" == "--72mhz" ]]; then
         BOOTLOADER_ENV="nova_bootloader"
-        FIRMWARE_ENV="nova_voyager"  # 72MHz firmware
+        # `release`, NOT nova_voyager. nova_voyager extends release_120, which
+        # sets USE_120MHZ=1 - so this arm paired the 72 MHz DFU bootloader with
+        # a 120 MHz application while its own comment claimed otherwise. The
+        # app re-parks and reconfigures its own clock so it runs anyway, but it
+        # then prints "DFU needs the 72 MHz bootloader" at an operator who has
+        # exactly that, and identifies itself as the 120 MHz product build.
+        # `release` is the 72 MHz release env.
+        FIRMWARE_ENV="release"  # 72MHz firmware, for the DFU-capable pairing
         echo "Using 72MHz bootloader (USB DFU enabled)"
     fi
 done
