@@ -46,14 +46,16 @@ resistors.
 
 ![MCB top side, SIP1 and neighbouring headers visible](photos/mcb-pcb-top.jpg)
 
-*MCB overview with `SIP1` (SWD), the HMI 10-pin header and the RPS 5-pin header
-all visible along the front edge.*
+*MCB top side. `SIP1` is the 4-hole footprint at lower right; the HMI 10-pin
+and 5-pin RPS headers are the pair at lower left.*
 
-![SIP1 detail with R56/R57](photos/mcb-sip1-detail.jpg)
+![SIP1, the unpopulated SWD header](photos/mcb-sip1-detail.jpg)
 
-*The unpopulated 4-pin SWD header. Pin 1 is the **square** pad.*
+*`SIP1`, unpopulated. **Pin 1 is the square pad** — the left-hand hole, by
+the `+` mark. `R56` and `R57` are the SWDIO/SWCLK series resistors.*
 
-**Pin 1 (square pad) → pin 4, as wired on this board:**
+**Pin 1 (square pad) → pin 4.** Continuity-checked against the `+3V3` and
+`GND` test pads:
 
 | SIP1 pin | Net   | GD32 pin |
 |----------|-------|----------|
@@ -62,16 +64,17 @@ all visible along the front edge.*
 | 3        | SWCLK | PA14 (package pin 49) |
 | 4        | GND   | —        |
 
-![SIP1 wired for programming](photos/mcb-sip1-wired.jpg)
+![SIP1 with a probe harness fitted](photos/mcb-sip1-wired.jpg)
 
-*Probe attached. Note the orientation — the easy way to get this backwards is
-to assume pin 1 is on the GND side like many 4-pin SWD headers; on this board
-it is the 3V3 side.*
+*`SIP1` with a probe harness fitted. Red is on pin 1 (3V3), the `+`-marked
+end, then yellow (SWDIO), white (SWCLK), black (GND). The separate yellow wire
+is the NRST tap, soldered to GD32 package pin 7.*
 
 **No NRST on the header.** NRST is GD32F303 package pin 7 — if a connect-under-
-reset flow is ever needed, tack a wire directly to the pad. For normal flashing
-and interactive debugging, hot-attach to the running chip works fine (unless
-RDP is set — see below).
+reset flow is ever needed, tack a wire directly to the pin, which is what the
+yellow wire in the photo above does. For normal flashing and interactive
+debugging, hot-attach to the running chip works fine (unless RDP is set — see
+below).
 
 The header footprint is 2.54 mm, so **JST-XH** housings fit (B4B-XH-A vertical
 or S4B-XH-A side-entry). JST-PH (2.0 mm) does **not** fit.
@@ -170,10 +173,10 @@ pin 1  3  5  7  9      ← odd row
 pin 2  4  6  8  10     ← even row (notch next to pin 6)
 ```
 
-![HMI header and RPS header, MCB front edge](photos/mcb-headers.jpg)
+![The MCB's two front-edge headers](photos/mcb-headers.jpg)
 
-*The HMI 10-pin box header and the 5-pin RPS header side by side. Notch
-visible on the HMI header.*
+*`P1` (5-pin, RPS) and `P2` (10-pin, HMI) on the front edge. The polarising
+key on `P2` is moulded into the lower shroud wall.*
 
 **Pin 4** carries the MCB→HMI TX line. That is also the tap point used when
 sniffing the link with a logic analyzer.
@@ -188,10 +191,11 @@ sniffing the link with a logic analyzer.
 > isolation barrier the π140U31 is there to provide and can destroy the
 > isolator if there is any potential difference between the two sides.
 
-![π140U31 and the GND/G2 split](photos/mcb-isolator.jpg)
+![The isolator, with the G2 and 5V2 test pads](photos/mcb-isolator.jpg)
 
-*The π140U31 and the ground split. The barrier runs across the body of the
-isolator; left-side pads reference `GND`, right-side pads reference `G2`.*
+*`P2`, the HMI header, is at lower left; its lines reach the isolator through
+`R41`–`R44`, and the far side of the package goes to the MCU. `G2` and `5V2`
+are the isolated side's ground and supply pads — reference probes there.*
 
 When probing with a scope or logic analyzer:
 
@@ -211,6 +215,15 @@ end of the link. The two documents assume you keep the barrier intact.
 | **`+3V3` and `GND` test pads** | Separate silkscreened single-pad test points elsewhere on the board — convenient for scope reference without hunting on the SIP1 header. |
 | **BOOT0** | GD32F303 package pin 60. Not routed to any accessible header. Only matters if you need to force the ROM UART bootloader; the SWD path at `SIP1` is simpler for every normal workflow. |
 | **24 V main input** | High-current side of the board. Nothing on this doc interacts with it; stay on the logic side. |
+
+Nothing in this document touches the power side. The photo below is here only
+so you can tell at a glance which face of the board you are looking at:
+
+![MCB solder side, power stage](photos/mcb-pcb-bottom.jpg)
+
+*Solder side — the face the power devices mount on. Twelve TO-220 in two rows
+of six, three TO-247 (`VT1`, `VT2`, `VD2`), and a bridge rectifier at lower
+right. Every tab faces the aluminium plate the board bolts to.*
 
 ---
 
