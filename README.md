@@ -142,6 +142,26 @@ is how panels get bricked:
 - The DFU request word is cleared by the bootloader as soon as it reads it, so
   a request cannot get stuck across a reset.
 
+#### One unproven caveat, if you choose the DFU pairing
+
+A single flash cell at `0x08000488` — inside the bootloader's first page — has
+gone bad six times on the author's board: a 0→1 bit flip, repaired by a rewrite
+every time. The cause is not established. The current working hypothesis is a
+weak cell on this particular part; an earlier theory that it was a debugger
+misread has been ruled out. It correlates with flash programming in general
+rather than with DFU specifically.
+
+Why it matters to the choice above: the **120 MHz** bootloader is 792 bytes, so
+that address is erased flash and a flip there cannot affect execution. The
+**72 MHz DFU** bootloader is 3540 bytes and does place code over it. So if the
+defect is specific to this board, none of this concerns you; if it is a
+weakness that comes with the part, the DFU pairing is the one that would be
+exposed. Nobody knows which, and with one board there is no way to know.
+
+Stated here rather than omitted because the honest summary is "one board, six
+incidents, cause unknown" — not a reason to avoid the DFU pairing, and not
+something to discover on your own machine either.
+
 ### Pin map
 
 | Signal | Pin | Notes |
