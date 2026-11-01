@@ -74,7 +74,16 @@ import)
         esac
         key=$(printf '%s' "$line" | awk '{print $2}')
         want=$(printf '%s' "$line" | awk '{print $3}')
-        reply=$("$SERIAL" "$line" 8 | sed 's/\r$//')
+        # `< /dev/null` is NOT optional. nova-serial wraps ssh, and ssh
+        # consumes stdin - which here is the settings file being read by the
+        # enclosing `while read`. Without it the loop applies the FIRST line,
+        # ssh swallows the rest, and the script reports "Replayed 1 settings,
+        # 0 problems" and saves. A restore that silently applies one setting
+        # and claims success is precisely the failure this tool exists to
+        # prevent, and the first version of it had exactly that bug - caught
+        # by importing a file whose values already matched, which made the
+        # count the only thing that could be wrong.
+        reply=$("$SERIAL" "$line" 8 < /dev/null | sed 's/\r$//')
         sent=$((sent + 1))
         if printf '%s' "$reply" | grep -q "^Set $key="; then
             got=$(printf '%s' "$reply" | sed -n "s/^Set $key=\([0-9-]*\).*/\1/p" | head -1)
