@@ -226,8 +226,21 @@ verify_bootloader_intact() {
     printf '  comparing 0x%08X-0x%08X against %s\n' \
         $((0x08000000)) $((0x08000000 + size - 1)) "$(basename "$(dirname "$img")")/$(basename "$img")"
     if [ "$size" -le "$DEFECT_OFF" ]; then
-        echo_warn "window STOPS SHORT of the known defect at 0x$(printf %08X $((0x08000000+DEFECT_OFF)))"
-        echo_warn "- a clean result below says nothing about that address."
+        # Not a coverage gap. This image simply does not reach that far, so the
+        # address holds erased flash (0xFF) and the 0->1 flip that has rotted
+        # six times cannot affect execution on this build. Only the 3540-byte
+        # DFU build and the 4420-byte diagnostic pad put code over 0x488.
+        #
+        # The first version of this warning said the window "STOPS SHORT" and
+        # that a clean result "says nothing about that address", which was
+        # literally true and badly misleading - it reads as untested coverage
+        # when there is nothing there to test. Corrected after the bootloader
+        # session pointed out that 792 bytes IS the whole _120 image.
+        printf '  note: %s-byte image does not extend to 0x%08X, so that address is\n' \
+            "$size" $((0x08000000+DEFECT_OFF))
+        printf '        erased flash here - a flip there cannot affect execution on\n'
+        printf '        this build. Only the DFU (3540 B) and pad (4420 B) builds\n'
+        printf '        put code over it.\n'
     fi
     remote_put "$img" /tmp/bl_reference.bin
     if remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
@@ -241,8 +254,8 @@ verify_bootloader_intact() {
         elif [ "$size" -gt "$DEFECT_OFF" ]; then
             echo "  Bootloader intact over 0-$(printf 0x%X $((size-1))) (defect address covered; pad only partly)."
         else
-            echo "  First ${size} bytes match the reference. NOT a statement about"
-            echo "  the defect at 0x$(printf %08X $((0x08000000+DEFECT_OFF))) or the pad - both are past the window."
+            echo "  Bootloader intact (whole ${size}-byte image compared)."
+            echo "  The defect address lies beyond this build's code, in erased flash."
         fi
         return 0
     fi
