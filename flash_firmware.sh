@@ -540,8 +540,34 @@ erase_and_flash_both() {
     # Read back both vector tables. "Verified" from the writer is not evidence
     # the part actually boots — see docs on the recurring bootloader corruption.
     echo_step "Verifying vector tables..."
+    # `mww 0xE0042004 0` before shutdown, and it matters more than it looks.
+    #
+    # OpenOCD's target/stm32f1x.cfg sets DBGMCU_CR to 0x307 on every attach -
+    # DBG_SLEEP|DBG_STOP|DBG_STANDBY|DBG_IWDG_STOP|DBG_WWDG_STOP - from its
+    # examine-end event (line 83 of the 0.12.0 copy). DBG_IWDG_STOP freezes the
+    # independent watchdog whenever the core halts, and DBGMCU_CR lives in the
+    # debug power domain, so it survives SYSRESETREQ.
+    #
+    # This session is the LAST SWD action of an install, and it runs AFTER the
+    # st-flash reset that boots the new firmware. The firmware clears the
+    # register at boot (main.c) - but that boot already happened, so this attach
+    # re-sets 0x307 and nothing boots afterwards to clear it. The board is then
+    # left unable to watchdog-recover a fault until its next reset. Measured
+    # 2026-11-01: a soft reset after `custom` printed
+    # "DBGMCU_CR at boot: 0x00000307 (IWDG WAS FROZEN)".
+    #
+    # verify_bootloader_intact does not need this because it ends with
+    # `reset run`, so the firmware's own clear runs last. Confirmed by
+    # experiment the same day: an attach + `reset run` + shutdown leaves the
+    # register clean, i.e. examine-end does NOT re-fire on the post-reset
+    # re-examine.
+    #
+    # NOT done in scripts/capture-flash-defect.sh, deliberately: there the
+    # core is left halted holding the evidence, and un-freezing the watchdog
+    # would let it reset the board and destroy exactly what was captured.
     remote_sh "sudo openocd -f interface/stlink.cfg -c 'transport select swd' \
         -f target/stm32f1x.cfg -c 'init' -c 'mdw 0x08000000 2' -c 'mdw 0x08003000 2' \
+        -c 'mww 0xE0042004 0' \
         -c 'shutdown'" 2>&1 | grep -E "^0x0800" || true
 }
 
