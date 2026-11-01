@@ -59,6 +59,11 @@ DBGMCU_CR=0xE0042004
 CFSR=0xE000ED28    # write-1-to-clear
 HFSR=0xE000ED2C    # bit 30 = FORCED, bit 1 = VECTTBL
 
+APP_BASE=0x08003000
+APP_SIZE=0x2000    # enough to see the app's vector table and early code. The
+                   # first two words are the whole diagnosis when the app is
+                   # the problem: 0xFFFFFFFF for both means erased flash, and
+                   # the MCU then faults on exception stacking and locks up.
 BL_BASE=0x08000000
 BL_SIZE=0x3000     # the whole 12 KB bootloader region, NOT a reference-image
                    # size — verify_bootloader_intact once compared only 792
@@ -74,23 +79,31 @@ cat <<'SHOWN'
     openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
         -c "reset_config none" \
         -c init -c halt \
-        -c "reg pc" -c "reg xPSR" \
         -c "dump_image /tmp/fd_bootloader.bin 0x08000000 0x3000" \
+        -c "dump_image /tmp/fd_app.bin 0x08003000 0x2000" \
+        -c "catch {reg pc}" -c "catch {reg xpsr}" \
         -c "mdw <DHCSR> 1" -c "mdw <DBGMCU_CR> 1" \
         -c "mdw <CFSR> 1"  -c "mdw <HFSR> 1" \
         -c "mww <CFSR> 0xFFFFFFFF" \
         -c resume -c "sleep 1000" -c halt \
-        -c "reg pc" -c "mdw <CFSR> 1" -c "mdw <HFSR> 1" \
+        -c "catch {reg pc}" -c "mdw <CFSR> 1" -c "mdw <HFSR> 1" \
         -c shutdown
 SHOWN
 echo
 
 # One session, so the halt state is continuous across every read.
 #
-# Order matters: pc and xPSR come first because they are free and xPSR's
-# exception number says which handler the core is sitting in (3 = HardFault,
-# which is what a FORCED bit in HFSR implies). The flash dump comes before the
-# register writes so the evidence is on disk whatever happens afterwards.
+# Order matters, and the first version of this got it wrong in the field.
+#
+# The dump goes FIRST, before any register read. The earlier version read pc
+# and xPSR first - "they are free" - and on 2026-11-01 `reg xPSR` turned out
+# not to be a valid register name on OpenOCD 0.12.0. A failing -c command
+# ABORTS every -c after it, so the single most important artefact, the flash
+# image, was never captured on the one occasion this script was needed. A free
+# read is not free if it can fail.
+#
+# Every register read is now wrapped in `catch {}` for the same reason, and the
+# names are the ones this OpenOCD actually accepts (lowercase xpsr).
 OCD_LOG="/tmp/fd_openocd.log"
 set +e
 # `reset_config none` BEFORE init, deliberately. The stock
@@ -103,10 +116,12 @@ set +e
 remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
     -c 'reset_config none' \
     -c 'init' -c 'halt' \
-    -c 'echo \"--- pc/xPSR at halt ---\"' \
-    -c 'reg pc' -c 'reg xPSR' \
-    -c 'echo \"--- bootloader region dump ---\"' \
+    -c 'echo \"--- bootloader region dump (FIRST: evidence before anything that can fail) ---\"' \
     -c 'dump_image /tmp/fd_bootloader.bin $BL_BASE $BL_SIZE' \
+    -c 'echo \"--- application head dump ---\"' \
+    -c 'dump_image /tmp/fd_app.bin $APP_BASE $APP_SIZE' \
+    -c 'echo \"--- pc/xpsr/sp/lr at halt ---\"' \
+    -c 'catch {reg pc}' -c 'catch {reg xpsr}' -c 'catch {reg sp}' -c 'catch {reg lr}' \
     -c 'echo \"--- DHCSR (bit19=S_LOCKUP) ---\"' -c 'mdw $DHCSR 1' \
     -c 'echo \"--- DBGMCU_CR (post-attach, debugger-set - see note) ---\"' -c 'mdw $DBGMCU_CR 1' \
     -c 'echo \"--- CFSR before clear ---\"' -c 'mdw $CFSR 1' \
@@ -115,13 +130,14 @@ remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
     -c 'mww $CFSR 0xFFFFFFFF' \
     -c 'resume' -c 'sleep 1000' -c 'halt' \
     -c 'echo \"--- after resume: pc, CFSR, HFSR ---\"' \
-    -c 'reg pc' -c 'mdw $CFSR 1' -c 'mdw $HFSR 1' \
+    -c 'catch {reg pc}' -c 'mdw $CFSR 1' -c 'mdw $HFSR 1' \
     -c 'shutdown' > $OCD_LOG 2>&1"
 rc=$?
 set -e
 
 remote_get "$OCD_LOG" "$OUT/openocd.log" 2>/dev/null || true
 remote_get /tmp/fd_bootloader.bin "$OUT/bootloader-region.bin" 2>/dev/null || true
+remote_get /tmp/fd_app.bin "$OUT/app-head.bin" 2>/dev/null || true
 
 if [ ! -s "$OUT/openocd.log" ]; then
     echo "No OpenOCD output came back (exit $rc)." >&2
