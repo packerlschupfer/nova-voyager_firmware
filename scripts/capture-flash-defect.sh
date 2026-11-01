@@ -21,6 +21,12 @@ set -euo pipefail
 # Default_Handler with no serial output. Your firmware is not running, so no
 # console command can help — this has to come over SWD.
 #
+# Note that an ERASED or FAILED-WRITE flash presents identically from outside:
+# blank display, no serial, an SWD attach that may or may not come up. They are
+# indistinguishable until you look at the flash, which is why this script dumps
+# it first and why the NOTES at the bottom give you both signatures side by
+# side. Do not assume which one you have.
+#
 # WHAT IT DELIBERATELY DOES NOT DO
 # --------------------------------
 # It never resets the target. `init; halt` only; no `reset halt`, no
@@ -126,7 +132,7 @@ remote_sh "sudo openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
     -c 'echo \"--- DBGMCU_CR (post-attach, debugger-set - see note) ---\"' -c 'mdw $DBGMCU_CR 1' \
     -c 'echo \"--- CFSR before clear ---\"' -c 'mdw $CFSR 1' \
     -c 'echo \"--- HFSR before clear ---\"' -c 'mdw $HFSR 1' \
-    -c 'echo \"--- clearing CFSR, resuming 1s ---\"' \
+    -c 'echo \"--- clearing CFSR, resuming 1s (IWDG IS LIVE HERE - see notes) ---\"' \
     -c 'mww $CFSR 0xFFFFFFFF' \
     -c 'resume' -c 'sleep 1000' -c 'halt' \
     -c 'echo \"--- after resume: pc, CFSR, HFSR ---\"' \
@@ -163,6 +169,31 @@ fi
 cat <<'NOTES'
 
 NOTES ON READING THIS
+
+  WHICH FAILURE IS THIS? The two look identical from outside. Classify from the
+  dump and CFSR, not from the symptom:
+
+    ERASED / FAILED-WRITE FLASH
+      vectors at 0x08000000 and 0x08003000 read 0xFFFFFFFF
+      pc    0xFFFFFFFE            (lockup)
+      CFSR  0x00001001            (IACCVIOL | STKERR)
+      HFSR  0x40000000            (FORCED)
+      Cause is a programming accident, not the cell defect. Recovery is a
+      full install; if the erase times out, power-cycle and repeat.
+      Reference capture: 2026-11-01, which was exactly this.
+
+    FLASH DEFECT AT 0x08000488
+      vector table VALID, pc inside Default_Handler
+      CFSR  0x00010400 or 0x00000400
+      HFSR  0x40000000            (FORCED)
+      This is the one worth preserving and reporting.
+
+  - The 1 s resume runs with the IWDG LIVE. DBG_IWDG_STOP only holds the
+    watchdog while the core is halted, so an armed IWDG can fire and reset the
+    board inside that window. Both dumps are already on disk by then, so the
+    evidence is safe — but if the post-resume pc/CFSR/HFSR look like a FRESH
+    BOOT rather than a fault, that is the watchdog, not a new failure. Read it
+    that way before concluding anything.
   - DBGMCU_CR read here is CONTAMINATED. OpenOCD's stm32f1x config sets
     DBG_IWDG_STOP and friends during attach, so a 0x307 read through the
     debugger says nothing about the state before attach. The meaningful value
@@ -171,6 +202,11 @@ NOTES ON READING THIS
     HFSR with pc in Default_Handler is the expected signature of this defect.
   - The core is left HALTED. Nothing here reset it, and only a power cycle
     clears the debug domain, so a second run sees the same state.
+  - A full-chip erase takes the SETTINGS PAGE at 0x0803F800 with it, so any
+    recovery via `flash_firmware.sh custom` resets every flash-held setting -
+    material/bit/diameter, interface.*, display units. The external EEPROM is a
+    separate chip and survives, but it cannot hold those fields. Check them
+    after recovery rather than assuming they came back.
   - Compare bootloader-region.bin against a known-good build before concluding
     anything about which bytes moved:
         cmp -l <known-good>.bin flash-defect-*/bootloader-region.bin | head
