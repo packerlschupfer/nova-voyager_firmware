@@ -67,6 +67,8 @@ jobs:
       # exercising a layout the firmware does not ship.
       - name: Verify the settings test mirror matches the header
         run: ./scripts/check-settings-mirror.sh
+      - name: Verify the settings key lists agree
+        run: ./scripts/check-settings-keys.sh
       # 506 native tests gate CI but did not gate releases, so a release could
       # ship code no test run had seen.
       - name: Unit tests

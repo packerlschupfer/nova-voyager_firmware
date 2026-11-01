@@ -118,6 +118,33 @@ For bench setup, wiring, and first-flash instructions see
 | Sensors | Depth (ADC), guard switch, E-Stop |
 | Bootloader | DFU at `0x08000000` (12 KB), application at `0x08003000` (242 KB + a 2 KB settings page) |
 
+### Back up your settings before erasing anything
+
+```bash
+./scripts/nova-settings.sh export my-machine.txt    # before
+./scripts/nova-settings.sh import my-machine.txt    # after
+./scripts/nova-settings.sh diff   my-machine.txt    # compare
+```
+
+`EXPORT` on the console emits the settings **as `SET` commands** — the output
+is the restore procedure, so it goes through the same validated setters as a
+human typing them, with no separate format and no blob that could bypass a
+range check.
+
+Worth doing before `custom`, `erase`, `quickboot` or `original`: all four erase
+flash, which takes the settings page at `0x0803F800` with it. Only `quick`
+leaves it alone. The external EEPROM is a separate chip and survives, but it is
+61 bytes and cannot hold everything — material, bit type, diameter,
+`interface.*` and display units live only in the flash mirror and are lost.
+
+The import replays one line at a time, checks every reply, and refuses to
+`SAVE` if any setting failed or was clamped. A partial restore that reports
+success is the specific failure this is built to prevent.
+
+Not yet covered by `EXPORT`: `depth.*`, `step_drill.*`, the tapping timings,
+`interface.*` and `display.units` — no `SET` keys exist for those yet, and
+`EXPORT` says so in its own output rather than leaving you to notice.
+
 ### Bootloader pairing
 
 Verified against the bootloader source on 2026-10-31, because guessing at this
@@ -373,12 +400,14 @@ pio test -e native                 # 506 tests
 ./scripts/check-settings-mirror.sh
 ./scripts/check-pins.sh
 ./scripts/check-version.sh
+./scripts/check-settings-keys.sh
 ```
 
 | Script | Enforces |
 |--------|----------|
 | `scripts/check-builds.sh` | Every environment CI builds, builds locally — and prints each one's RAM figure. Only `release` was ever built by hand, so a 1280-byte jam flight recorder overflowed the RAM-tight games and demo builds past the DFU hand-off word and left CI red for eight commits before anyone noticed. |
 | `scripts/check-version.sh` | `FW_VERSION_MAJOR/MINOR/PATCH` and `FW_VERSION_FALLBACK` agree with each other, and with the tag being released. The version was hand-maintained once and said `v0.1.0-RTOS` for 35 commits. |
+| `scripts/check-settings-keys.sh` | `DUMP`, `GET`, `SET` and `EXPORT` agree on the settings keys. There were three independent hand-maintained lists; `DUMP` printed 34 keys and `SET` could write 14, so a settings export could restore a third of a machine and report success doing it. |
 | `scripts/check-pins.sh` | The toolchain/framework pins in `platformio.ini` are actually applied per-env — a pin declared only in `[common]` is silently ignored, which is how the first release binary differed from the tested one. |
 | `scripts/check-safety-gate.sh` | Every function that drives the motor-enable line consults `safety_can_start_motor()`, or is on a two-entry allowlist with a reason. No test can see a gate that was never called. |
 | `scripts/check-settings-mirror.sh` | `test/test_settings`'s local copy of the settings types matches the real headers. `pio test -e native` compiles no `src/`, so that mirror IS the coverage — when it drifts the suite passes while testing a layout the firmware does not ship. |

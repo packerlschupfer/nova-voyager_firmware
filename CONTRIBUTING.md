@@ -30,6 +30,7 @@ pio test -e native                 # 506 tests
 ./scripts/check-settings-mirror.sh
 ./scripts/check-pins.sh
 ./scripts/check-version.sh
+./scripts/check-settings-keys.sh
 ```
 
 `check-builds.sh` exists because for a long time only `release` was ever built
@@ -51,6 +52,10 @@ in the PR — don't route around it.
   detector has a flight recorder (`JAMTRACE`) precisely so thresholds can be
   argued from recorded samples. "This felt too sensitive" is a reason to go and
   capture a trace, not to change a number.
+- **A new setting that `DUMP` prints but `SET` cannot write.** That makes a
+  settings export silently partial, and `check-settings-keys.sh` fails on it.
+  If a key genuinely must be read-only, put it on that script's allowlist with
+  a reason.
 - **A new `settings_t` field with no entry in `test/test_settings`'s mirror.**
   `pio test -e native` compiles no `src/`, so that mirror *is* the coverage;
   `check-settings-mirror.sh` enforces it. 39 settings once went unpersisted

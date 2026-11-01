@@ -185,6 +185,81 @@ void cmd_dump(void) {
     uart_puts("=== END ===\r\n");
 }
 
+/* Defined below, next to cmd_get/cmd_set where the key list lives. Declared
+ * here because cmd_export() reads every value through it - that is what keeps
+ * EXPORT and GET from drifting apart. */
+static bool settings_read_by_key(const char* key, uint16_t* out);
+
+/* Keys EXPORT emits, in replay order.
+ *
+ * ORDER IS LOAD-BEARING. settings_set_speed() clamps to speed.max_limit and
+ * settings_set_favorite_speed() clamps to SPEED_MAX_RPM, so speed.max must be
+ * restored BEFORE speed.default and the favourites or they come back clamped
+ * to whatever the cap happened to be. Everything else is order-independent;
+ * these three are not, and nothing in the console would tell you.
+ *
+ * This is the only list of its kind - values come from settings_read_by_key(),
+ * so EXPORT cannot drift from GET. scripts/check-settings-keys.sh checks it
+ * against what DUMP prints, less an explicit read-only allowlist. */
+static const char* const EXPORT_KEYS[] = {
+    "speed.max",            /* first: it is the clamp for the two below */
+    "speed.default",
+    "speed.material", "speed.bit_type", "speed.bit_diameter",
+    "speed.fav0", "speed.fav1", "speed.fav2", "speed.fav3",
+    "speed.fav4", "speed.fav5", "speed.fav6", "speed.fav7",
+    "motor.profile", "motor.speed_ramp", "motor.torque_ramp",
+    "motor.current_limit", "motor.speed_kprop", "motor.speed_kint",
+    "motor.voltage_kp", "motor.voltage_ki", "motor.ir_gain", "motor.ir_offset",
+    "power.output", "power.temp_threshold",
+    "sensor.jam_detect", "sensor.spike_detect", "sensor.spike_thresh",
+    "sensor.step_thresh", "sensor.low_load_detect", "sensor.low_load_thresh",
+    "sensor.overload", "sensor.vibration", "sensor.guard_check",
+    "tap.depth", "tap.load_inc", "tap.load_slip", "tap.clutch",
+    "tap.quill", "tap.peck", "tap.pedal",
+};
+
+/* Emit the settings as commands that restore them.
+ *
+ * Why this exists: on 2026-11-01 a full-chip erase took the settings page with
+ * it, and there was no way to put a machine's configuration back except to
+ * read it out of an old chat log and retype it. DUMP showed everything and
+ * nothing could replay it. EXPORT's output IS the restore procedure - every
+ * line is a command the console already accepts, so it goes through the same
+ * validated setters as a human typing them, with no new parser and no blob
+ * that could bypass a range check. */
+void cmd_export(void) {
+    uart_puts("# nova-voyager settings export\r\n");
+    uart_puts("# firmware: " FW_VERSION_STRING " [" FW_BUILD_STRING "]\r\n");
+    uart_puts("# replay with: scripts/nova-settings.sh import <file>\r\n");
+    uart_puts("# or paste the SET lines, then SAVE. Order matters: speed.max\r\n");
+    uart_puts("# comes first because speed.default and the favourites clamp to it.\r\n");
+
+    const size_t n = sizeof(EXPORT_KEYS) / sizeof(EXPORT_KEYS[0]);
+    for (size_t i = 0; i < n; i++) {
+        uint16_t v = 0;
+        if (!settings_read_by_key(EXPORT_KEYS[i], &v)) {
+            /* A key in the list that GET cannot read is a bug, not a blank
+             * line: say so rather than emitting a command that would restore
+             * the wrong thing. */
+            uart_puts("# UNREADABLE KEY (bug): ");
+            uart_puts(EXPORT_KEYS[i]);
+            uart_puts("\r\n");
+            continue;
+        }
+        uart_puts("SET ");
+        uart_puts(EXPORT_KEYS[i]);
+        uart_putc(' ');
+        print_num(v);
+        uart_puts("\r\n");
+    }
+
+    uart_puts("SAVE\r\n");
+    uart_puts("# not exported: power.dc_bus (live measurement, not a setting)\r\n");
+    uart_puts("# not covered: depth.*, step_drill.*, tap timings, interface.*,\r\n");
+    uart_puts("#   display.units - no SET keys exist for these yet.\r\n");
+    uart_puts("# === END EXPORT ===\r\n");
+}
+
 void cmd_save(void) {
     if (settings_is_dirty()) {
         uart_puts("Saving settings...\r\n");
@@ -243,6 +318,42 @@ static bool settings_read_by_key(const char* key, uint16_t* out) {
     else if (strcmp(key, "speed.material") == 0)         *out = s->speed.material;
     else if (strcmp(key, "speed.bit_type") == 0)         *out = s->speed.bit_type;
     else if (strcmp(key, "speed.bit_diameter") == 0)     *out = s->speed.bit_diameter;
+    /* Everything DUMP prints is now readable here, and writable by SET unless
+     * listed read-only in scripts/check-settings-keys.sh. Before 2026-11-02,
+     * DUMP printed 34 keys and SET could write 14 of them - so a settings
+     * export could only ever restore a third of a machine's configuration,
+     * silently. That gap cost a real set of settings on 2026-11-01 when a
+     * full-chip erase wiped the flash-held fields and there was nothing to
+     * restore them from. */
+    else if (strcmp(key, "motor.profile") == 0)          *out = s->motor.profile;
+    else if (strcmp(key, "motor.speed_ramp") == 0)       *out = s->motor.speed_ramp;
+    else if (strcmp(key, "motor.torque_ramp") == 0)      *out = s->motor.torque_ramp;
+    else if (strcmp(key, "motor.current_limit") == 0)    *out = s->motor.current_limit;
+    else if (strcmp(key, "motor.speed_kprop") == 0)      *out = s->motor.speed_kprop;
+    else if (strcmp(key, "motor.speed_kint") == 0)       *out = s->motor.speed_kint;
+    else if (strcmp(key, "motor.voltage_kp") == 0)       *out = s->motor.voltage_kp;
+    else if (strcmp(key, "motor.voltage_ki") == 0)       *out = s->motor.voltage_ki;
+    else if (strcmp(key, "power.output") == 0)           *out = s->power.power_output;
+    else if (strcmp(key, "power.temp_threshold") == 0)   *out = s->power.temp_threshold;
+    /* READ-ONLY: a live measurement, not a setting. Readable so GET and DUMP
+     * agree, deliberately absent from SET and from EXPORT. */
+    else if (strcmp(key, "power.dc_bus") == 0)           *out = s->power.dc_bus_voltage;
+    else if (strcmp(key, "sensor.vibration") == 0)       *out = s->sensor.vibration_sensitivity;
+    else if (strcmp(key, "sensor.guard_check") == 0)     *out = s->sensor.guard_check_enabled;
+    else if (strcmp(key, "tap.depth") == 0)              *out = s->tapping.depth_trigger_enabled;
+    else if (strcmp(key, "tap.load_inc") == 0)           *out = s->tapping.load_increase_enabled;
+    else if (strcmp(key, "tap.load_slip") == 0)          *out = s->tapping.load_slip_enabled;
+    else if (strcmp(key, "tap.clutch") == 0)             *out = s->tapping.clutch_slip_enabled;
+    else if (strcmp(key, "tap.quill") == 0)              *out = s->tapping.quill_trigger_enabled;
+    else if (strcmp(key, "tap.peck") == 0)               *out = s->tapping.peck_trigger_enabled;
+    else if (strcmp(key, "tap.pedal") == 0)              *out = s->tapping.pedal_enabled;
+    /* speed.fav0 .. speed.fav7 - the eight presets F1 cycles through. DUMP
+     * builds these keys a character at a time, which is why they were missed
+     * when the key lists were first compared. */
+    else if (strncmp(key, "speed.fav", 9) == 0 &&
+             key[9] >= '0' && key[9] < ('0' + NUM_FAVORITE_SPEEDS) && key[10] == '\0') {
+        *out = s->speed.favorite[key[9] - '0'];
+    }
     else return false;
 
     return true;
@@ -382,6 +493,56 @@ void cmd_set(void) {
         if (value > 255) { ok = reject_u8(key); } else settings_set_bit_type((uint8_t)value);
     } else if (strcmp(key, "speed.bit_diameter") == 0) {
         if (value > 255) { ok = reject_u8(key); } else settings_set_bit_diameter((uint8_t)value);
+    /* The 19 keys below closed the DUMP/SET gap on 2026-11-02. Each states its
+     * own narrowing bound, per the warning above: a uint8_t setter reached
+     * through the shared 65535 check stored 300 as 44. */
+    } else if (strcmp(key, "motor.profile") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_motor_profile((uint8_t)value);
+    } else if (strcmp(key, "motor.speed_ramp") == 0) {
+        settings_set_speed_ramp((uint16_t)value);
+    } else if (strcmp(key, "motor.torque_ramp") == 0) {
+        settings_set_torque_ramp((uint16_t)value);
+    } else if (strcmp(key, "motor.current_limit") == 0) {
+        settings_set_current_limit((uint16_t)value);
+    } else if (strcmp(key, "motor.speed_kprop") == 0) {
+        if (value > 32767) { ok = reject_i16(key); } else settings_set_motor_kprop((int16_t)value);
+    } else if (strcmp(key, "motor.speed_kint") == 0) {
+        if (value > 32767) { ok = reject_i16(key); } else settings_set_motor_kint((int16_t)value);
+    } else if (strcmp(key, "motor.voltage_kp") == 0) {
+        if (value > 32767) { ok = reject_i16(key); } else settings_set_voltage_kp((int16_t)value);
+    } else if (strcmp(key, "motor.voltage_ki") == 0) {
+        if (value > 32767) { ok = reject_i16(key); } else settings_set_voltage_ki((int16_t)value);
+    } else if (strcmp(key, "power.output") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_power_output((uint8_t)value);
+    } else if (strcmp(key, "power.temp_threshold") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_temp_threshold((uint8_t)value);
+    } else if (strcmp(key, "sensor.vibration") == 0) {
+        if (value > 255) { ok = reject_u8(key); } else settings_set_vibration_sensitivity((uint8_t)value);
+    } else if (strcmp(key, "sensor.guard_check") == 0) {
+        settings_set_guard_check(value != 0);
+    } else if (strcmp(key, "tap.depth") == 0) {
+        settings_set_depth_trigger_enabled(value != 0);
+    } else if (strcmp(key, "tap.load_inc") == 0) {
+        settings_set_load_increase_enabled(value != 0);
+    } else if (strcmp(key, "tap.load_slip") == 0) {
+        settings_set_load_slip_enabled(value != 0);
+    } else if (strcmp(key, "tap.clutch") == 0) {
+        settings_set_clutch_slip_enabled(value != 0);
+    } else if (strcmp(key, "tap.quill") == 0) {
+        settings_set_quill_trigger_enabled(value != 0);
+    } else if (strcmp(key, "tap.peck") == 0) {
+        settings_set_peck_trigger_enabled(value != 0);
+    } else if (strcmp(key, "tap.pedal") == 0) {
+        settings_set_pedal_enabled(value != 0);
+    } else if (strncmp(key, "speed.fav", 9) == 0 &&
+               key[9] >= '0' && key[9] < ('0' + NUM_FAVORITE_SPEEDS) && key[10] == '\0') {
+        settings_set_favorite_speed((uint8_t)(key[9] - '0'), (uint16_t)value);
+    } else if (strcmp(key, "power.dc_bus") == 0) {
+        /* Readable, never writable: it is the measured DC bus voltage. Named
+         * explicitly so the answer is "that is not a setting" rather than
+         * "unknown key", which would send someone looking for a typo. */
+        uart_puts("power.dc_bus is a live measurement, not a setting\r\n");
+        ok = false;
     } else {
         uart_puts("Unknown key: ");
         uart_puts(key);
@@ -893,6 +1054,7 @@ const cmd_entry_t cmd_table[] = {
     {"COLDBOOT",   cmd_coldboot,   0},
     {"SAVE",       cmd_save,       0},
     {"DUMP",       cmd_dump,       0},
+    {"EXPORT",     cmd_export,     0},
     {"GET",        cmd_get,        0},
     {"SET",        cmd_set,        0},
     {"VIB",        cmd_vib,        0},

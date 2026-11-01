@@ -66,6 +66,11 @@ jobs:
       # only thing left to check when a tag is cut.
       - name: Verify the version block is self-consistent
         run: ./scripts/check-version.sh
+
+      # DUMP, GET, SET and EXPORT must agree on the keys, or a settings export
+      # restores only part of a machine and reports success doing it.
+      - name: Verify the settings key lists agree
+        run: ./scripts/check-settings-keys.sh
       - name: Build firmware
         run: pio run -e nova_voyager -e nova_voyager_games -e nova_voyager_demo -e debug
 
