@@ -381,6 +381,25 @@ for arg in "$@"; do
     fi
 done
 
+# Parse --games to flash the build that carries Pong, Snake and Penguin.
+# Also a 120 MHz env (extends release_120), so the bootloader pairing rule
+# above still holds, and settings_t is identical so saved settings survive.
+#
+# One real cost, stated here because it is not obvious from the env name: the
+# games build defines BUILD_GAMES, which sizes the jam flight recorder at 40
+# samples instead of 160 (MLOAD_TRACE_LEN in include/motor_load.h). The game
+# task and its 4 KB FreeRTOS heap leave no room for the full-length recorder
+# without colliding with the DFU hand-off word. So a jam trace taken on this
+# build holds a quarter of the history - fine for playing Pong on a drill
+# press, not what you want when diagnosing a trip.
+for arg in "$@"; do
+    if [[ "$arg" == "--games" ]]; then
+        FIRMWARE_ENV="nova_voyager_games"
+        echo "Using GAMES firmware build (Pong/Snake/Penguin)"
+        echo "NOTE: jam flight recorder is 40 samples on this build, not 160."
+    fi
+done
+
 # Parse --allow-dev-bootloader. See bootloader_tree_check() below for why.
 ALLOW_DEV_BOOTLOADER=0
 for arg in "$@"; do
@@ -393,6 +412,7 @@ done
 set -- "${@/--dfu/}"
 set -- "${@/--72mhz/}"
 set -- "${@/--debug/}"
+set -- "${@/--games/}"
 set -- "${@/--allow-dev-bootloader/}"
 
 CUSTOM_BOOTLOADER="$BOOTLOADER_DIR/.pio/build/$BOOTLOADER_ENV/firmware.bin"
@@ -776,6 +796,8 @@ case "$1" in
         echo "  versions       - List available official versions"
         echo ""
         echo "Options:"
+        echo "  --games        - Flash the build with Pong/Snake/Penguin"
+        echo "                   (jam flight recorder is 40 samples, not 160)"
         echo "  --allow-dev-bootloader - Permit a non-release bootloader tree"
         echo "  --dfu, --72mhz - Use 72MHz bootloader with USB DFU support"
         echo "                   Default: 120MHz bootloader (ST-Link only)"
