@@ -418,11 +418,12 @@ the offending symbol.
 ## Project status
 
 - All features implemented; firmware in daily use
-- **506 unit tests** across 19 suites (all passing)
+- **513 unit tests** across 20 suites (all passing)
 
-  Five of those suites exercise the *shipping* code rather than a copy, by
+  Six of those suites exercise the *shipping* code rather than a copy, by
   keeping the logic in a header the tests can include directly — `safety.h`,
-  `menu_format.h`, `settings_pack.h`, `events_policy.h`, `speed_autosave.h`.
+  `menu_format.h`, `settings_pack.h`, `events_policy.h`, `speed_autosave.h`,
+  `voltage_monitor.h`.
   That matters because `pio test -e native` compiles no `src/`: a suite that
   re-implements the logic it is checking proves only the copy right, which is
   how a guard/E-Stop edge bug and 39 unpersisted settings survived a full
