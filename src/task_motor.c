@@ -1792,6 +1792,10 @@ void task_motor(void *pvParameters) {
                 }
 
                 // UD query — DC bus voltage (slow-changing, idle only)
+                /* Declared out here, not inside the parse branch: the
+                 * rejection path below needs to ask whether the bus has ever
+                 * been readable. */
+                static voltage_monitor_t volt_mon = {0, false, false};
                 send_query(CMD_UD);
                 if (wait_response_for(MOTOR_RESPONSE_TIMEOUT_MS, CMD_UD)) {
                     size_t off = protocol_find_stx(rx_buffer, rx_index, 3);
@@ -1807,7 +1811,18 @@ void task_motor(void *pvParameters) {
                         protocol_parse_and_validate(rx_buffer, off, rx_index,
                                                     DC_BUS_MIN_PLAUSIBLE, 500,
                                                     &voltage);
-                    if (!ud_ok) query_reply_failed(false, CMD_UD);
+                    /* An implausible reply before the bus is readable is the
+                     * expected cold-boot condition, not a protocol error -
+                     * measured as exactly 6 of them, all UD. Tallied
+                     * separately so it stays visible without making a normal
+                     * boot look faulty. */
+                    if (!ud_ok) {
+                        if (voltage_monitor_reject_is_error(&volt_mon)) {
+                            query_reply_failed(false, CMD_UD);
+                        } else {
+                            diagnostics_note_dc_bus_warmup();
+                        }
+                    }
                     {
                         if (ud_ok) {
                             STATE_LOCK();
@@ -1819,7 +1834,6 @@ void task_motor(void *pvParameters) {
                              * re-implementation of an edge detector this code
                              * had already stopped using - green against
                              * behaviour the firmware did not have. */
-                            static voltage_monitor_t volt_mon = {0, false};
                             if (voltage_monitor_sample(&volt_mon, (uint16_t)voltage)) {
                                 SEND_EVENT(EVT_LOW_VOLTAGE);
                             }

@@ -65,6 +65,13 @@ typedef struct {
         uint16_t timeout;
         uint16_t checksum;
     } protocol_cmd_errors[DIAG_PROTO_CMD_SLOTS];
+
+    /* UD replies rejected before the DC bus was ever readable. Expected at a
+     * cold boot - the MCB answers while the bus is still charging - so these
+     * are NOT protocol errors and are kept apart from the counters above.
+     * Measured 2026-11-10: exactly 6, over the ~3 s the bus takes to come up.
+     * A number that keeps growing means something else is wrong. */
+    uint16_t dc_bus_warmup_rejects;
     uint32_t protocol_retries;          // Total retry attempts
 
     // Motor communication (MCB health)
@@ -140,6 +147,9 @@ void diagnostics_protocol_error(uint8_t error_type);
  * @param cmd        packed two-letter command code, e.g. CMD_UD
  */
 void diagnostics_protocol_error_cmd(uint8_t error_type, uint16_t cmd);
+
+/** @brief Note a UD reply rejected before the bus was readable (cold boot). */
+void diagnostics_note_dc_bus_warmup(void);
 
 /**
  * @brief Record protocol command sent

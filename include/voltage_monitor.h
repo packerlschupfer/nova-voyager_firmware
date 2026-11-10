@@ -52,7 +52,34 @@ static inline bool voltage_is_plausible(int32_t volts) {
 typedef struct {
     uint8_t low_count;   /**< consecutive low-but-plausible readings */
     bool    reported;    /**< warned for the current sag; cleared on recovery */
+    bool    seen_valid;  /**< a plausible reading has arrived since boot */
 } voltage_monitor_t;
+
+/**
+ * @brief An implausible UD reply arrived. Is that an error, or just startup?
+ *
+ * MEASURED 2026-11-10 on a cold boot, with per-command attribution:
+ *
+ *     Frame errors: 6
+ *       by command (cmd: frame/timeout/checksum):
+ *         UD: 6/0/0
+ *
+ * Six, all UD, none on GF/SV/CV/KR/T0 across 1663 queries - so the MCB-ready
+ * handshake is sound and the only thing not ready is the bus MEASUREMENT. The
+ * MCB answers UD with 0 for the first ~3 s while the bus charges; the reply is
+ * real, the reading behind it is not.
+ *
+ * Counting those six as protocol errors made every cold boot look faulty in
+ * STATS. Not counting them at all would hide a UD that never becomes readable.
+ * So: before the first plausible reading they are the expected pre-charge
+ * condition and are tallied separately; after it, an implausible reply means
+ * something changed and is a real error.
+ *
+ * @return true if the caller should record a protocol frame error.
+ */
+static inline bool voltage_monitor_reject_is_error(const voltage_monitor_t* st) {
+    return st && st->seen_valid;
+}
 
 /**
  * @brief Feed one PLAUSIBLE reading. Implausible replies must not reach here —
@@ -62,6 +89,11 @@ typedef struct {
  */
 static inline bool voltage_monitor_sample(voltage_monitor_t* st, uint16_t volts) {
     if (!st) return false;
+
+    /* Only plausible readings reach here, so this is the moment the bus became
+     * readable. After it, a rejected reply is a genuine fault rather than the
+     * pre-charge condition. */
+    st->seen_valid = true;
 
     if (volts < DC_BUS_LOW_VOLTAGE_THRESHOLD) {
         if (st->low_count < DC_BUS_LOW_DEBOUNCE) {

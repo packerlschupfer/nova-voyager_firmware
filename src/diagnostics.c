@@ -71,6 +71,10 @@ void diagnostics_queue_update_peak(bool is_motor_queue, uint16_t depth) {
     }
 }
 
+void diagnostics_note_dc_bus_warmup(void) {
+    if (diag.dc_bus_warmup_rejects < 0xFFFF) diag.dc_bus_warmup_rejects++;
+}
+
 void diagnostics_protocol_error_cmd(uint8_t error_type, uint16_t cmd) {
     /* Aggregate first, so the existing counters stay authoritative and the
      * per-command table is strictly additional information. */
@@ -245,6 +249,12 @@ void diagnostics_print_report(void) {
         print_num(diag.protocol_cmd_errors[i].timeout); uart_puts("/");
         print_num(diag.protocol_cmd_errors[i].checksum);
         uart_puts("\r\n");
+    }
+    if (diag.dc_bus_warmup_rejects > 0) {
+        /* Not an error: the MCB answers UD before the bus is readable. */
+        uart_puts("  UD replies before the bus was readable: ");
+        print_num(diag.dc_bus_warmup_rejects);
+        uart_puts(" (normal at cold boot)\r\n");
     }
     uart_puts("\r\n");
 

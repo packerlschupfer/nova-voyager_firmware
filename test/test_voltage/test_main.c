@@ -48,7 +48,7 @@ void test_absurdly_high_is_rejected(void) {
 /* An edge detector seeded at the threshold warned on EVERY boot, because the
  * first readings are legitimately below 300 V. A transient must not fire. */
 void test_brief_dip_does_not_warn(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     for (int i = 0; i < DC_BUS_LOW_DEBOUNCE - 1; i++) {
         TEST_ASSERT_FALSE(voltage_monitor_sample(&m, 250));
     }
@@ -58,7 +58,7 @@ void test_brief_dip_does_not_warn(void) {
 /* An edge detector seeded at 0 treated boot as "already low", so a bus that
  * was genuinely low from power-up never warned at all. It must warn. */
 void test_sustained_low_warns_once(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     int fired = 0;
     for (int i = 0; i < 20; i++) {
         if (voltage_monitor_sample(&m, 200)) fired++;
@@ -67,7 +67,7 @@ void test_sustained_low_warns_once(void) {
 }
 
 void test_warning_fires_exactly_on_the_debounce_poll(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     for (int i = 0; i < DC_BUS_LOW_DEBOUNCE - 1; i++) {
         TEST_ASSERT_FALSE(voltage_monitor_sample(&m, 100));
     }
@@ -77,7 +77,7 @@ void test_warning_fires_exactly_on_the_debounce_poll(void) {
 /* Recovery must re-arm, or the first sag of a session silently swallows every
  * later one. */
 void test_recovery_rearms_for_the_next_sag(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     int fired = 0;
     for (int i = 0; i < DC_BUS_LOW_DEBOUNCE; i++) {
         if (voltage_monitor_sample(&m, 200)) fired++;
@@ -94,7 +94,7 @@ void test_recovery_rearms_for_the_next_sag(void) {
 
 /* One good reading mid-sag resets the count: the requirement is SUSTAINED. */
 void test_one_good_reading_resets_the_count(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     for (int i = 0; i < DC_BUS_LOW_DEBOUNCE - 1; i++) {
         TEST_ASSERT_FALSE(voltage_monitor_sample(&m, 250));
     }
@@ -107,14 +107,14 @@ void test_one_good_reading_resets_the_count(void) {
 /* Boundary, carried over from the tests this suite replaces: the comparison is
  * strictly-less-than, so the threshold itself is not low. */
 void test_exactly_at_threshold_is_not_low(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     for (int i = 0; i < DC_BUS_LOW_DEBOUNCE * 2; i++) {
         TEST_ASSERT_FALSE(voltage_monitor_sample(&m, DC_BUS_LOW_VOLTAGE_THRESHOLD));
     }
 }
 
 void test_one_below_threshold_warns_after_the_debounce(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     const uint16_t v = DC_BUS_LOW_VOLTAGE_THRESHOLD - 1;
     for (int i = 0; i < DC_BUS_LOW_DEBOUNCE - 1; i++) {
         TEST_ASSERT_FALSE(voltage_monitor_sample(&m, v));
@@ -125,8 +125,42 @@ void test_one_below_threshold_warns_after_the_debounce(void) {
 /* The replaced edge detector fired on the FIRST crossing. The firmware does
  * not, and must not - that behaviour is what warned on every boot. */
 void test_first_low_reading_alone_does_not_warn(void) {
-    voltage_monitor_t m = {0, false};
+    voltage_monitor_t m = {0, false, false};
     TEST_ASSERT_FALSE(voltage_monitor_sample(&m, 250));
+}
+
+/* ---- the warm-up gate: 2026-11-10, measured ---- */
+
+/* Per-command attribution on a cold boot showed exactly 6 rejected replies,
+ * all UD, none on GF/SV/CV/KR/T0 across 1663 queries. So the MCB answers UD
+ * before the bus is readable, and those rejections are the expected
+ * pre-charge condition - not protocol errors. */
+void test_rejections_before_the_first_valid_reading_are_not_errors(void) {
+    voltage_monitor_t m = {0, false, false};
+    TEST_ASSERT_FALSE(voltage_monitor_reject_is_error(&m));
+}
+
+/* ...but once the bus has proven readable, an implausible reply means
+ * something changed, and that IS an error worth counting. */
+void test_rejections_after_a_valid_reading_are_errors(void) {
+    voltage_monitor_t m = {0, false, false};
+    voltage_monitor_sample(&m, 353);
+    TEST_ASSERT_TRUE(voltage_monitor_reject_is_error(&m));
+}
+
+/* The gate latches on the first plausible reading, and a later sag - which is
+ * plausible, just low - must not un-latch it. */
+void test_a_sag_does_not_reopen_the_warmup_window(void) {
+    voltage_monitor_t m = {0, false, false};
+    voltage_monitor_sample(&m, 353);
+    for (int i = 0; i < DC_BUS_LOW_DEBOUNCE * 2; i++) {
+        voltage_monitor_sample(&m, 200);
+    }
+    TEST_ASSERT_TRUE(voltage_monitor_reject_is_error(&m));
+}
+
+void test_reject_gate_is_null_safe(void) {
+    TEST_ASSERT_FALSE(voltage_monitor_reject_is_error(NULL));
 }
 
 void test_null_is_safe(void) {
@@ -148,6 +182,10 @@ int main(void) {
     RUN_TEST(test_exactly_at_threshold_is_not_low);
     RUN_TEST(test_one_below_threshold_warns_after_the_debounce);
     RUN_TEST(test_first_low_reading_alone_does_not_warn);
+    RUN_TEST(test_rejections_before_the_first_valid_reading_are_not_errors);
+    RUN_TEST(test_rejections_after_a_valid_reading_are_errors);
+    RUN_TEST(test_a_sag_does_not_reopen_the_warmup_window);
+    RUN_TEST(test_reject_gate_is_null_safe);
     RUN_TEST(test_null_is_safe);
     return UNITY_END();
 }

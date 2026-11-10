@@ -418,7 +418,7 @@ the offending symbol.
 ## Project status
 
 - All features implemented; firmware in daily use
-- **513 unit tests** across 20 suites (all passing)
+- **517 unit tests** across 20 suites (all passing)
 
   Six of those suites exercise the *shipping* code rather than a copy, by
   keeping the logic in a header the tests can include directly — `safety.h`,
