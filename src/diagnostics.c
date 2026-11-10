@@ -71,6 +71,31 @@ void diagnostics_queue_update_peak(bool is_motor_queue, uint16_t depth) {
     }
 }
 
+void diagnostics_protocol_error_cmd(uint8_t error_type, uint16_t cmd) {
+    /* Aggregate first, so the existing counters stay authoritative and the
+     * per-command table is strictly additional information. */
+    diagnostics_protocol_error(error_type);
+
+    if (cmd == 0) return;
+
+    int slot = -1;
+    for (int i = 0; i < DIAG_PROTO_CMD_SLOTS; i++) {
+        if (diag.protocol_cmd_errors[i].cmd == cmd) { slot = i; break; }
+        if (diag.protocol_cmd_errors[i].cmd == 0 && slot < 0) { slot = i; }
+    }
+    /* Table full and this command not in it: fold into the last slot rather
+     * than discard. A lost count is worse than a slightly wrong attribution,
+     * and the last slot's name tells the reader which one absorbed it. */
+    if (slot < 0) slot = DIAG_PROTO_CMD_SLOTS - 1;
+
+    diag.protocol_cmd_errors[slot].cmd = cmd;
+    switch (error_type) {
+        case 0: if (diag.protocol_cmd_errors[slot].checksum < 0xFFFF) diag.protocol_cmd_errors[slot].checksum++; break;
+        case 1: if (diag.protocol_cmd_errors[slot].frame    < 0xFFFF) diag.protocol_cmd_errors[slot].frame++;    break;
+        case 2: if (diag.protocol_cmd_errors[slot].timeout  < 0xFFFF) diag.protocol_cmd_errors[slot].timeout++;  break;
+    }
+}
+
 void diagnostics_protocol_error(uint8_t error_type) {
     switch (error_type) {
         case 0: diag.protocol_checksum_errors++; break;
@@ -200,7 +225,28 @@ void diagnostics_print_report(void) {
     uart_puts("\r\n");
     uart_puts("Timeouts: ");
     print_num(diag.protocol_timeout_errors);
-    uart_puts("\r\n\r\n");
+    uart_puts("\r\n");
+
+    /* Which command. An aggregate count says something is wrong and nothing
+     * about what - see the note on protocol_cmd_errors in diagnostics.h. */
+    bool any_cmd = false;
+    for (int i = 0; i < DIAG_PROTO_CMD_SLOTS; i++) {
+        if (diag.protocol_cmd_errors[i].cmd == 0) continue;
+        if (!any_cmd) {
+            uart_puts("  by command (cmd: frame/timeout/checksum):\r\n");
+            any_cmd = true;
+        }
+        uart_puts("    ");
+        /* Packed ASCII: CMD_UD == 0x5544 == "UD". */
+        uart_putc((char)((diag.protocol_cmd_errors[i].cmd >> 8) & 0xFF));
+        uart_putc((char)(diag.protocol_cmd_errors[i].cmd & 0xFF));
+        uart_puts(": ");
+        print_num(diag.protocol_cmd_errors[i].frame);   uart_puts("/");
+        print_num(diag.protocol_cmd_errors[i].timeout); uart_puts("/");
+        print_num(diag.protocol_cmd_errors[i].checksum);
+        uart_puts("\r\n");
+    }
+    uart_puts("\r\n");
 
     /* MCB communication health.
      *

@@ -244,8 +244,12 @@ static char hex_digit(uint8_t n);
  * Successful: 1492 / Timeouts: 0" while the CV query was failing on every
  * single poll and the panel showed 0 rpm on a turning spindle. A query that
  * did not come back is exactly what these counters are for. */
-static void query_reply_failed(bool timed_out) {
-    diagnostics_protocol_error(timed_out ? 2 /* timeout */ : 1 /* frame */);
+/* `cmd` so STATS can say WHICH query failed. An aggregate count reported
+ * "Timeouts: 0" for two days while CV failed every cycle, and a cold boot on
+ * 2026-11-10 produced "Frame errors: 6" that nobody could attribute - which
+ * is what blocked the question "what should init do differently". */
+static void query_reply_failed(bool timed_out, uint16_t cmd) {
+    diagnostics_protocol_error_cmd(timed_out ? 2 /* timeout */ : 1 /* frame */, cmd);
 }
 
 static bool send_query(uint16_t cmd) {
@@ -1074,7 +1078,7 @@ static void motor_query_status(void) {
                 /* Truncated, unterminated or foreign frame. Treat it as the
                  * comm failure it is rather than as "motor stopped". */
                 consecutive_comm_failures++;
-                query_reply_failed(false);
+                query_reply_failed(false, CMD_GET_FLAGS);
             } else {
                 consecutive_comm_failures = 0;
 
@@ -1177,12 +1181,12 @@ static void motor_query_status(void) {
         } else {
             // Got response but invalid format - count as failure (H5)
             consecutive_comm_failures++;
-            query_reply_failed(false);
+            query_reply_failed(false, CMD_GET_FLAGS);
         }
     } else {
         // No response at all - communication failure (H5)
         consecutive_comm_failures++;
-        query_reply_failed(true);
+        query_reply_failed(true, CMD_GET_FLAGS);
     }
 
     // SV query — confirm MCB accepted our target speed
@@ -1194,10 +1198,10 @@ static void motor_query_status(void) {
             protocol_parse_and_validate(rx_buffer, off, rx_index, 1, SPEED_MAX_RPM, &target_speed)) {
             update_sv_state((uint16_t)target_speed);
         } else {
-            query_reply_failed(false);
+            query_reply_failed(false, CMD_SET_SPEED);
         }
     } else {
-        query_reply_failed(true);
+        query_reply_failed(true, CMD_SET_SPEED);
     }
 
     // CV query — actual motor speed (also arrives unsolicited, but query ensures freshness)
@@ -1209,10 +1213,10 @@ static void motor_query_status(void) {
             protocol_parse_and_validate(rx_buffer, off, rx_index, 0, SPEED_MAX_RPM, &actual_speed)) {
             update_cv_state((uint16_t)actual_speed);
         } else {
-            query_reply_failed(false);
+            query_reply_failed(false, CMD_GET_CV);
         }
     } else {
-        query_reply_failed(true);
+        query_reply_failed(true, CMD_GET_CV);
     }
 
     // KR query — motor load percentage
@@ -1224,10 +1228,10 @@ static void motor_query_status(void) {
             protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 100, &load)) {
             update_kr_state((uint8_t)load);
         } else {
-            query_reply_failed(false);
+            query_reply_failed(false, CMD_KEEP_RUNNING);
         }
     } else {
-        query_reply_failed(true);
+        query_reply_failed(true, CMD_KEEP_RUNNING);
     }
 
     // AUDIT FIX (HIGH, task_motor.c:1161): T0 (MCB heatsink temperature) used
@@ -1248,10 +1252,10 @@ static void motor_query_status(void) {
                 protocol_parse_and_validate(rx_buffer, toff, rx_index, 0, 150, &mcb_temp)) {
                 temp_monitor_update((uint16_t)mcb_temp, settings_get()->power.temp_threshold);
             } else {
-                query_reply_failed(false);
+                query_reply_failed(false, CMD_T0);
             }
         } else {
-            query_reply_failed(true);
+            query_reply_failed(true, CMD_T0);
         }
     }
 
@@ -1746,7 +1750,7 @@ void task_motor(void *pvParameters) {
                  * two days. A diagnostic that cannot show a loss is worse than
                  * no diagnostic, because it is believed. */
                 if (!wait_response(MOTOR_RESPONSE_TIMEOUT_MS)) {
-                    query_reply_failed(true);
+                    query_reply_failed(true, CMD_GET_FLAGS);
                 }
 
                 // KR query — motor load
@@ -1764,10 +1768,10 @@ void task_motor(void *pvParameters) {
                         protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 100, &load)) {
                         update_kr_state((uint8_t)load);
                     } else {
-                        query_reply_failed(false);
+                        query_reply_failed(false, CMD_KEEP_RUNNING);
                     }
                 } else {
-                    query_reply_failed(true);
+                    query_reply_failed(true, CMD_KEEP_RUNNING);
                 }
 
                 // T0 query — MCB heatsink temperature (slow-changing, idle only)
@@ -1781,10 +1785,10 @@ void task_motor(void *pvParameters) {
                         protocol_parse_and_validate(rx_buffer, toff, rx_index, 0, 150, &mcb_temp)) {
                         temp_monitor_update((uint16_t)mcb_temp, settings_get()->power.temp_threshold);
                     } else {
-                        query_reply_failed(false);
+                        query_reply_failed(false, CMD_T0);
                     }
                 } else {
-                    query_reply_failed(true);
+                    query_reply_failed(true, CMD_T0);
                 }
 
                 // UD query — DC bus voltage (slow-changing, idle only)
@@ -1803,7 +1807,7 @@ void task_motor(void *pvParameters) {
                         protocol_parse_and_validate(rx_buffer, off, rx_index,
                                                     DC_BUS_MIN_PLAUSIBLE, 500,
                                                     &voltage);
-                    if (!ud_ok) query_reply_failed(false);
+                    if (!ud_ok) query_reply_failed(false, CMD_UD);
                     {
                         if (ud_ok) {
                             STATE_LOCK();
@@ -1822,7 +1826,7 @@ void task_motor(void *pvParameters) {
                         }
                     }
                 } else {
-                    query_reply_failed(true);
+                    query_reply_failed(true, CMD_UD);
                 }
             }
 

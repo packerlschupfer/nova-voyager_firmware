@@ -21,6 +21,11 @@
 /* Error Counters                                                             */
 /*===========================================================================*/
 
+/* Distinct commands tracked for per-command error attribution. Eight covers
+ * everything polled today (GF, SV, CV, KR, T0, UD, GV, F0) with no spare, so
+ * the overflow behaviour below is deliberate rather than theoretical. */
+#define DIAG_PROTO_CMD_SLOTS 8
+
 typedef struct {
     // UART errors (Phase 1.1 monitoring)
     uint32_t uart_tx_timeouts;          // TX timeout count
@@ -40,6 +45,26 @@ typedef struct {
     uint32_t protocol_timeout_errors;   // Protocol response timeouts
     uint32_t protocol_commands_sent;    // Total commands sent
     uint32_t protocol_queries_sent;     // Total queries sent
+
+    /* Per-command attribution for the three counters above.
+     *
+     * WHY: an aggregate count says something is wrong and nothing about what.
+     * STATS read "1492 queries / 1492 successful / Timeouts: 0" for two days
+     * while the CV poll failed on EVERY cycle (20496ba fixed the counting, not
+     * the attribution). And on 2026-11-10 a cold boot produced "Frame
+     * errors: 6" with no way to tell which query produced them, so the next
+     * question - what to change at init - could not be answered without
+     * guessing.
+     *
+     * The command code IS two ASCII letters (CMD_UD == 0x5544 == "UD"), so
+     * these print by name. Slots are claimed on first error; a full table
+     * accumulates into the last slot rather than dropping counts. */
+    struct {
+        uint16_t cmd;        /* packed ASCII, 0 = slot unused */
+        uint16_t frame;
+        uint16_t timeout;
+        uint16_t checksum;
+    } protocol_cmd_errors[DIAG_PROTO_CMD_SLOTS];
     uint32_t protocol_retries;          // Total retry attempts
 
     // Motor communication (MCB health)
@@ -108,6 +133,13 @@ void diagnostics_queue_update_peak(bool is_motor_queue, uint16_t depth);
  * @param error_type 0=checksum, 1=frame, 2=timeout
  */
 void diagnostics_protocol_error(uint8_t error_type);
+
+/**
+ * @brief Record a protocol error AND which command it belongs to.
+ * @param error_type 0=checksum, 1=frame, 2=timeout (as above)
+ * @param cmd        packed two-letter command code, e.g. CMD_UD
+ */
+void diagnostics_protocol_error_cmd(uint8_t error_type, uint16_t cmd);
 
 /**
  * @brief Record protocol command sent
