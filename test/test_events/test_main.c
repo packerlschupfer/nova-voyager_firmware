@@ -91,7 +91,6 @@ static uint16_t mock_last_temp;     /* value returned by motor_get_temperature()
 static uint16_t mock_last_voltage;  /* simulated DC bus voltage level */
 
 /* Low-voltage edge-detection state (mirrors the real driver's duty) */
-static bool mock_voltage_was_low;   /* previous sample was below threshold */
 
 static void mock_reset_calls(void) {
     mock_motor_disable_calls  = 0;
@@ -102,7 +101,6 @@ static void mock_reset_calls(void) {
     mock_beep_calls           = 0;
     mock_last_temp            = 0;
     mock_last_voltage         = 400; /* normal voltage */
-    mock_voltage_was_low      = false;
 }
 
 /* Mock functions referenced by the handlers */
@@ -226,25 +224,7 @@ static void sim_overheat(void) {
  * We implement the edge-detect logic here and test both the crossing and the
  * repeated-low (no-fire) case.
  */
-#define LOW_VOLTAGE_EVENT_FIRED   1
-#define LOW_VOLTAGE_EVENT_SILENT  0
 
-static int sim_voltage_sample(uint16_t new_voltage) {
-    int fired = LOW_VOLTAGE_EVENT_SILENT;
-    bool now_low = (new_voltage < DC_BUS_LOW_VOLTAGE_THRESHOLD);
-
-    if (now_low && !mock_voltage_was_low) {
-        /* Falling edge only */
-        g_state.error_until = 3000;
-        g_state.error_line1 = " LOW VOLTAGE! ";
-        g_state.error_line2 = "Check power     ";
-        fired = LOW_VOLTAGE_EVENT_FIRED;
-    }
-
-    mock_voltage_was_low    = now_low;
-    g_state.dc_bus_voltage  = new_voltage;
-    return fired;
-}
 
 /*===========================================================================*/
 /* Dispatch table (Test 11) — matches events.c verbatim                      */
@@ -644,56 +624,18 @@ void test_overheat_shows_message_for_5s(void) {
 }
 
 /*===========================================================================*/
-/* Test 10 — Low voltage edge: only fires on crossing, not on power-off     */
+/* Low voltage — MOVED to test/test_voltage                                  */
 /*===========================================================================*/
-
-void test_low_voltage_fires_on_first_crossing(void) {
-    /* Voltage drops from normal (400 V) to below threshold (250 V) */
-    mock_voltage_was_low = false;
-    int result = sim_voltage_sample(250);
-    TEST_ASSERT_EQUAL(LOW_VOLTAGE_EVENT_FIRED, result);
-}
-
-void test_low_voltage_sets_error_message_on_crossing(void) {
-    mock_voltage_was_low = false;
-    sim_voltage_sample(250);
-    TEST_ASSERT_NOT_EQUAL(0, strlen(g_state.error_line1));
-}
-
-void test_low_voltage_does_not_refire_when_already_low(void) {
-    /* Simulate power-off: voltage was already low last sample */
-    mock_voltage_was_low = true;
-    int result = sim_voltage_sample(150);  /* still low */
-    TEST_ASSERT_EQUAL(LOW_VOLTAGE_EVENT_SILENT, result);
-}
-
-void test_low_voltage_does_not_fire_above_threshold(void) {
-    mock_voltage_was_low = false;
-    int result = sim_voltage_sample(356);  /* normal bus voltage */
-    TEST_ASSERT_EQUAL(LOW_VOLTAGE_EVENT_SILENT, result);
-}
-
-void test_low_voltage_fires_again_after_recovery(void) {
-    /* Drop → recover → drop again must fire */
-    mock_voltage_was_low = false;
-    sim_voltage_sample(250);              /* first crossing */
-    sim_voltage_sample(380);              /* recovery */
-    int result = sim_voltage_sample(200); /* second crossing */
-    TEST_ASSERT_EQUAL(LOW_VOLTAGE_EVENT_FIRED, result);
-}
-
-void test_low_voltage_exactly_at_threshold_is_not_low(void) {
-    /* Boundary: at exactly the threshold value, no event */
-    mock_voltage_was_low = false;
-    int result = sim_voltage_sample(DC_BUS_LOW_VOLTAGE_THRESHOLD);
-    TEST_ASSERT_EQUAL(LOW_VOLTAGE_EVENT_SILENT, result);
-}
-
-void test_low_voltage_one_below_threshold_fires(void) {
-    mock_voltage_was_low = false;
-    int result = sim_voltage_sample(DC_BUS_LOW_VOLTAGE_THRESHOLD - 1);
-    TEST_ASSERT_EQUAL(LOW_VOLTAGE_EVENT_FIRED, result);
-}
+/* Seven tests and a sim_voltage_sample() mock lived here. The mock
+ * re-implemented an EDGE detector ("fires on first crossing") that the
+ * firmware replaced with a debounce on 2026-08-30, so the suite was green
+ * against behaviour the firmware did not have and would have stayed green
+ * whatever task_motor.c did. One of them asserted the first low reading fires,
+ * which is now exactly wrong - that behaviour is what warned on every boot.
+ *
+ * The decision now lives in include/voltage_monitor.h, header-inline so the
+ * tests can include the SHIPPING code, and test/test_voltage exercises it:
+ * the plausibility floor, the debounce, the boundary and the re-arm. */
 
 /*===========================================================================*/
 /* Test 11 — Dispatch table completeness                                     */
@@ -826,13 +768,6 @@ int main(void) {
     RUN_TEST(test_overheat_shows_message_for_5s);
 
     /* Test 10: Low voltage edge detection */
-    RUN_TEST(test_low_voltage_fires_on_first_crossing);
-    RUN_TEST(test_low_voltage_sets_error_message_on_crossing);
-    RUN_TEST(test_low_voltage_does_not_refire_when_already_low);
-    RUN_TEST(test_low_voltage_does_not_fire_above_threshold);
-    RUN_TEST(test_low_voltage_fires_again_after_recovery);
-    RUN_TEST(test_low_voltage_exactly_at_threshold_is_not_low);
-    RUN_TEST(test_low_voltage_one_below_threshold_fires);
 
     /* Test 11: Dispatch table completeness */
     RUN_TEST(test_dispatch_table_covers_all_events);

@@ -1032,6 +1032,28 @@ typedef struct {
 #define MOTOR_STATUS_POLL_RUNNING_MS 50     // 20Hz when motor running (better responsiveness)
 #define MOTOR_MCB_WRITE_DELAY_MS    100     // Delay after MCB EEPROM write
 #define DC_BUS_LOW_VOLTAGE_THRESHOLD 300    // Warn below ~300V DC bus (normal ~356V)
+
+/* Below this, a UD reply is not a measurement - it is the MCB not having one
+ * yet. Treated as an invalid reply rather than as a low bus.
+ *
+ * MEASURED 2026-11-10, cold boot, UD polled live every ~750 ms:
+ *     +0.0s   0 V      <- first reply after the MCB reports ready
+ *     +2.3s  -1 V      <- read failure (motor_read_param sentinel)
+ *     +3.0s  413 V     <- unloaded rectifier peak
+ *     +4.5s  401 -> 393 -> 381 -> 369 -> 356 V, settling ~353 V
+ *
+ * So the bus is NOT slow to charge - it is over 400 V before anything can
+ * measure it, and then decays to the loaded value. The warning on every cold
+ * boot came from that leading 0: the UD validation accepted 0..500, so 0
+ * passed as a real reading, 0 < 300 fed the low-voltage debounce, and four of
+ * them at the 500 ms idle poll raised "LOW VOLTAGE!" about two seconds in.
+ *
+ * 0 cannot be a real bus voltage on a machine whose MCB is answering: the MCB
+ * is powered FROM the bus. 50 V is a generous floor - a genuine sag worth
+ * warning about reads in the hundreds, and the MCB's own logic supply would
+ * have collapsed long before 50 V. Anything under it is a reply with no
+ * reading behind it. */
+#define DC_BUS_MIN_PLAUSIBLE         50
 /* Consecutive sub-threshold readings before the low-bus warning fires.
  *
  * At the 2 Hz idle poll this is ~2 s. It exists because the bus charges from

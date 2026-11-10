@@ -31,6 +31,7 @@
 #include "spindle_hold.h"
 #include "temperature.h"
 #include "jam.h"
+#include "voltage_monitor.h"
 #include "motor_load.h"
 #include "safety.h"
 #include "utilities.h"
@@ -1793,43 +1794,30 @@ void task_motor(void *pvParameters) {
                     int16_t voltage;
                     const bool ud_ok =
                         (off != SIZE_MAX) &&
-                        protocol_parse_and_validate(rx_buffer, off, rx_index, 0, 500, &voltage);
+                        /* DC_BUS_MIN_PLAUSIBLE, not 0: a UD reply of 0 is the
+                         * MCB not having a reading yet, and accepting it as a
+                         * measurement is what raised "LOW VOLTAGE!" on every
+                         * cold boot. Rejecting it here means it is counted as
+                         * the frame error it is - visible in STATS - and never
+                         * reaches the debounce below. */
+                        protocol_parse_and_validate(rx_buffer, off, rx_index,
+                                                    DC_BUS_MIN_PLAUSIBLE, 500,
+                                                    &voltage);
                     if (!ud_ok) query_reply_failed(false);
                     {
                         if (ud_ok) {
                             STATE_LOCK();
                             g_state.dc_bus_voltage = (uint16_t)voltage;
                             STATE_UNLOCK();
-                            /* Sustained low bus, not an edge.
-                             *
-                             * FIELD FIX 2026-08-30: an edge detector cannot get
-                             * this right. Seeded at 0 it treated boot as
-                             * "already low", so a genuinely low bus never
-                             * warned at all. Seeded at the threshold — my fix
-                             * earlier the same day — it warned on EVERY boot,
-                             * because the bus charges from zero and the first
-                             * reading is legitimately below 300 V. The operator
-                             * saw exactly that.
-                             *
-                             * What matters is that the bus STAYS low. Debounced,
-                             * both cases work: the charge transient is ignored,
-                             * a bus that is low from power-up still reports
-                             * after ~2 s, and the warning re-arms once the bus
-                             * recovers so a later sag is reported again. */
-                            static uint8_t low_volt_count = 0;
-                            static bool low_volt_reported = false;
-                            if (voltage < DC_BUS_LOW_VOLTAGE_THRESHOLD) {
-                                if (low_volt_count < DC_BUS_LOW_DEBOUNCE) {
-                                    low_volt_count++;
-                                }
-                                if (low_volt_count >= DC_BUS_LOW_DEBOUNCE &&
-                                    !low_volt_reported) {
-                                    low_volt_reported = true;
-                                    SEND_EVENT(EVT_LOW_VOLTAGE);
-                                }
-                            } else {
-                                low_volt_count = 0;
-                                low_volt_reported = false;
+                            /* The decision lives in include/voltage_monitor.h
+                             * so the native suite can test the SHIPPING logic.
+                             * It used to live here, and test_events carried a
+                             * re-implementation of an edge detector this code
+                             * had already stopped using - green against
+                             * behaviour the firmware did not have. */
+                            static voltage_monitor_t volt_mon = {0, false};
+                            if (voltage_monitor_sample(&volt_mon, (uint16_t)voltage)) {
+                                SEND_EVENT(EVT_LOW_VOLTAGE);
                             }
                         }
                     }

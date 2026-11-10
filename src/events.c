@@ -106,7 +106,25 @@ static void handle_boot_complete(void) {
 }
 
 static void handle_low_voltage(void) {
-    DEBUG_PRINT("EVT: LOW VOLTAGE WARNING!\r\n");
+    /* uart_puts, not DEBUG_PRINT. DEBUG_PRINT expands to ((void)0) under
+     * NDEBUG, i.e. in every release build - so this warning appeared on the
+     * LCD for three seconds and left NO trace anywhere. An operator reporting
+     * "I get a low voltage alert at boot" could not be given a single piece of
+     * evidence, and diagnosing it on 2026-11-10 needed an external script
+     * polling UD through a power cycle to see what the firmware had already
+     * seen and discarded.
+     *
+     * Cheap to print: the event is debounced and latched by low_volt_reported,
+     * so it fires once per sag, not once per poll. */
+    uart_puts("! LOW VOLTAGE: DC bus below ");
+    print_num(DC_BUS_LOW_VOLTAGE_THRESHOLD);
+    uart_puts(" V for ");
+    print_num(DC_BUS_LOW_DEBOUNCE);
+    uart_puts(" polls - last reading ");
+    STATE_LOCK();
+    print_num(g_state.dc_bus_voltage);
+    STATE_UNLOCK();
+    uart_puts(" V\r\n");
     STATE_LOCK();
     g_state.error_until = HAL_GetTick() + 3000;  // Show for 3 seconds
     g_state.error_line1 = " LOW VOLTAGE! ";
